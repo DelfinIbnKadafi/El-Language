@@ -73,7 +73,7 @@ void Compile() {
     }
     
     // handle exit func
-    if(token.type == TOKEN_EXIT) {
+    if(token.type == TOKEN_KW_EXIT) {
       Token semicolon = LexerNext();
       
       // semicolon
@@ -88,12 +88,12 @@ void Compile() {
     }
     
     // Handle print statement
-    if(token.type == TOKEN_PRINT) {
+    if(token.type == TOKEN_KW_PRINT) {
       Token string = LexerNext();
       Token semicolon = LexerNext();
       
       // Validate string
-      if(string.type != TOKEN_STRING) {
+      if(string.type != TOKEN_LIT_STRING) {
         printf("Line %d: Expected string\n", string.line);
         exit(1);
       }

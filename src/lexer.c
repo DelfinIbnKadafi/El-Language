@@ -56,7 +56,7 @@ Token LexerNext() {
   if(strncmp(&source[position], "exit", 4) == 0 && !IsWordChar(source[position + 4])) {
     position += 4;
     
-    token.type = TOKEN_EXIT;
+    token.type = TOKEN_KW_EXIT;
     return token;
   }
   
@@ -64,7 +64,7 @@ Token LexerNext() {
   if(strncmp(&source[position], "print", 5) == 0 && !IsWordChar(source[position + 5])) {
     position += 5;
     
-    token.type = TOKEN_PRINT;
+    token.type = TOKEN_KW_PRINT;
     return token;
   }
   
@@ -87,7 +87,7 @@ Token LexerNext() {
       position++;
     }
     
-    token.type = TOKEN_STRING;
+    token.type = TOKEN_LIT_STRING;
     return token;
   }
   

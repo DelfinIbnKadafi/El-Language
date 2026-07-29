@@ -3,9 +3,13 @@
 
 // Token types supported by lexer
 typedef enum {
-  TOKEN_EXIT,
-  TOKEN_PRINT,
-  TOKEN_STRING,
+  TOKEN_KW_EXIT,
+  TOKEN_KW_PRINT,
+  
+  TOKEN_LIT_STRING,
+  
+  
+  
   TOKEN_SEMICOLON,
   TOKEN_EOF,
   TOKEN_ERROR
