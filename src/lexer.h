@@ -3,13 +3,29 @@
 
 // Token types supported by lexer
 typedef enum {
+  // keyword
   TOKEN_KW_EXIT,
   TOKEN_KW_PRINT,
+  TOKEN_KW_VAR,
+
+  // data type
+  TOKEN_TYPE_INT,
   
+  
+  // literal
   TOKEN_LIT_STRING,
+  TOKEN_LIT_NUMBER,
   
   
+  // operator
+  TOKEN_OP_ASSIGN,
+  TOKEN_OP_ADD,
+  TOKEN_OP_SUB,
+  TOKEN_OP_MUL,
+  TOKEN_OP_DIV,
   
+  
+  TOKEN_IDENTIFIER,
   TOKEN_SEMICOLON,
   TOKEN_EOF,
   TOKEN_ERROR
