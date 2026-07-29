@@ -7,12 +7,15 @@ typedef enum {
   OP_HALT
 } Opcode;
 
+// Max length of instruction string data
+#define INSTRUCTION_MAX_LEN 256
+
 // Single bytecode instruction
 typedef struct {
   Opcode opcode;
 
   // Instruction string data
-  char text[256];
+  char text[INSTRUCTION_MAX_LEN];
 } Instruction;
 
 // Execute bytecode

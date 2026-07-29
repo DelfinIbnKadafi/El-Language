@@ -7,12 +7,26 @@ char* source;
 // Current reading index
 int position;
 
+// Current source line
+int line;
+
+// Check if character can be part of a word
+int IsWordChar(char c) {
+  return (c >= 'a' && c <= 'z') ||
+         (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') ||
+         c == '_';
+}
+
 void LexerInit(char* input) {
   // Save source reference
   source = input;
 
   // Reset lexer position
   position = 0;
+
+  // Reset line counter
+  line = 1;
 }
 
 Token LexerNext() {
@@ -22,8 +36,15 @@ Token LexerNext() {
   while(source[position] == ' ' ||
         source[position] == '\n' ||
         source[position] == '\t') {
+    if(source[position] == '\n') {
+      line++;
+    }
+
     position++;
   }
+
+  // Mark token start line
+  token.line = line;
 
   // Check end of source
   if(source[position] == '\0') {
@@ -32,7 +53,8 @@ Token LexerNext() {
   }
 
   // Read print keyword
-  if(strncmp(&source[position], "print", 5) == 0) {
+  if(strncmp(&source[position], "print", 5) == 0 &&
+     !IsWordChar(source[position + 5])) {
     position += 5;
 
     token.type = TOKEN_PRINT;
@@ -46,7 +68,8 @@ Token LexerNext() {
     int index = 0;
 
     while(source[position] != '"' &&
-          source[position] != '\0') {
+          source[position] != '\0' &&
+          index < TOKEN_MAX_LEN - 1) {
       token.value[index++] = source[position++];
     }
 

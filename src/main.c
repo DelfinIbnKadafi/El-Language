@@ -11,14 +11,28 @@
 #include "lexer.h"
 #include "elvm.h"
 
-// max Bytecode
-#define MAX_BYTECODE 256
+// Initial bytecode capacity
+#define INITIAL_BYTECODE_CAP 256
 
 // Bytecode storage
-Instruction bytecode[MAX_BYTECODE];
+Instruction* bytecode;
 
 // Current bytecode size
 int bytecodeCount = 0;
+
+// Current bytecode capacity
+int bytecodeCap = 0;
+
+// Add one instruction, growing storage if needed
+void EmitInstruction(Instruction instruction) {
+  if(bytecodeCount >= bytecodeCap) {
+    bytecodeCap *= 2;
+
+    bytecode = realloc(bytecode, bytecodeCap * sizeof(Instruction));
+  }
+
+  bytecode[bytecodeCount++] = instruction;
+}
 
 // Load source file
 char* LoadFile(char* filename) {
@@ -65,30 +79,39 @@ void Compile() {
 
       // Validate string
       if(string.type != TOKEN_STRING) {
-        printf("Expected string\n");
+        printf("Line %d: Expected string\n", string.line);
         exit(1);
       }
 
       // Validate semicolon
       if(semicolon.type != TOKEN_SEMICOLON) {
-        printf("Expected ;\n");
+        printf("Line %d: Expected ;\n", semicolon.line);
         exit(1);
       }
 
       // Create print opcode
-      bytecode[bytecodeCount].opcode = OP_PRINT;
+      Instruction instruction;
 
-      strcpy(
-        bytecode[bytecodeCount].text,
-        string.value
+      instruction.opcode = OP_PRINT;
+
+      strncpy(
+        instruction.text,
+        string.value,
+        INSTRUCTION_MAX_LEN - 1
       );
 
-      bytecodeCount++;
+      instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+
+      EmitInstruction(instruction);
     }
   }
 
   // Add program stop
-  bytecode[bytecodeCount].opcode = OP_HALT;
+  Instruction halt;
+
+  halt.opcode = OP_HALT;
+
+  EmitInstruction(halt);
 }
 
 int main(int argc, char** argv) {
@@ -103,17 +126,23 @@ int main(int argc, char** argv) {
   // Start lexer
   LexerInit(source);
 
+  // Prepare bytecode storage
+  bytecodeCap = INITIAL_BYTECODE_CAP;
+
+  bytecode = malloc(bytecodeCap * sizeof(Instruction));
+
   // Compile source
   Compile();
 
   // Run VM
   VMRun(
     bytecode,
-    bytecodeCount + 1
+    bytecodeCount
   );
 
   // Free memory
   free(source);
+  free(bytecode);
 
   return 0;
 }
