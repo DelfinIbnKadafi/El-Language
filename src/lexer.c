@@ -21,17 +21,17 @@ int IsWordChar(char c) {
 void LexerInit(char* input) {
   // Save source reference
   source = input;
-
+  
   // Reset lexer position
   position = 0;
-
+  
   // Reset line counter
   line = 1;
 }
 
 Token LexerNext() {
   Token token;
-
+  
   // Skip whitespace
   while(source[position] == ' ' ||
         source[position] == '\n' ||
@@ -39,63 +39,70 @@ Token LexerNext() {
     if(source[position] == '\n') {
       line++;
     }
-
+    
     position++;
   }
-
+  
   // Mark token start line
   token.line = line;
-
+  
   // Check end of source
   if(source[position] == '\0') {
     token.type = TOKEN_EOF;
     return token;
   }
-
+  
+  // exit keyword
+  if(strncmp(&source[position], "exit", 4) == 0 && !IsWordChar(source[position + 4])) {
+    position += 4;
+    
+    token.type = TOKEN_EXIT;
+    return token;
+  }
+  
   // Read print keyword
-  if(strncmp(&source[position], "print", 5) == 0 &&
-     !IsWordChar(source[position + 5])) {
+  if(strncmp(&source[position], "print", 5) == 0 && !IsWordChar(source[position + 5])) {
     position += 5;
-
+    
     token.type = TOKEN_PRINT;
     return token;
   }
-
+  
   // Read string literal
   if(source[position] == '"') {
     position++;
-
+    
     int index = 0;
-
+    
     while(source[position] != '"' &&
           source[position] != '\0' &&
           index < TOKEN_MAX_LEN - 1) {
       token.value[index++] = source[position++];
     }
-
+    
     token.value[index] = '\0';
-
+    
     // Skip closing quote
     if(source[position] == '"') {
       position++;
     }
-
+    
     token.type = TOKEN_STRING;
     return token;
   }
-
+  
   // Read statement separator
   if(source[position] == ';') {
     position++;
-
+    
     token.type = TOKEN_SEMICOLON;
     return token;
   }
-
+  
   // Unknown character
   token.type = TOKEN_ERROR;
-
+  
   position++;
-
+  
   return token;
 }

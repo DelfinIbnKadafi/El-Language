@@ -13,7 +13,7 @@ typedef enum {
 // Single bytecode instruction
 typedef struct {
   Opcode opcode;
-
+  
   // Instruction string data
   char text[INSTRUCTION_MAX_LEN];
 } Instruction;

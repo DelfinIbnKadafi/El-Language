@@ -3,6 +3,7 @@
 
 // Token types supported by lexer
 typedef enum {
+  TOKEN_EXIT,
   TOKEN_PRINT,
   TOKEN_STRING,
   TOKEN_SEMICOLON,
@@ -16,10 +17,10 @@ typedef enum {
 // Store token information
 typedef struct {
   TokenType type;
-
+  
   // Token text data
   char value[TOKEN_MAX_LEN];
-
+  
   // Source line where token was read
   int line;
 } Token;
