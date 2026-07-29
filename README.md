@@ -21,6 +21,15 @@ The Virtual Machine handles program execution, memory management, and runtime op
 - Extensible architecture
 - Open source
 
+## Code Example
+
+```
+var int elfaria = 100;
+print Elfaria;
+print "Done";
+exit;
+```
+
 ## License
 
 This project is open source and available for developers who want to explore, contribute, and improve the language.
