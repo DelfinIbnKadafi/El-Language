@@ -24,9 +24,28 @@ The Virtual Machine handles program execution, memory management, and runtime op
 ## Code Example
 
 ```
-var int elfaria = 100;
-print Elfaria;
-print "Done";
+print "Hello, World!";
+print "This is El Virtual Machine";
+
+var int elfaria = 10;
+print elfaria;
+print elfaria + 10;
+elfaria = 10;
+print elfaria;
+
+var str will = "Will Serfort";
+var bool colette = true;
+var float decimal;
+
+print will;
+print colette;
+
+decimal = 1.0;
+
+var float violet;
+violet = elfaria / (decimal * 10);
+print violet;
+
 exit;
 ```
 
