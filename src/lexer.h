@@ -1,0 +1,65 @@
+#ifndef LEXER_H
+#define LEXER_H
+
+// Token types supported by lexer
+typedef enum {
+  // keyword
+  TOKEN_KW_EXIT,
+  TOKEN_KW_PRINT,
+  TOKEN_KW_VAR,
+  
+  
+  // data type
+  TOKEN_TYPE_INT,
+  TOKEN_TYPE_FLOAT,
+  TOKEN_TYPE_STR,
+  TOKEN_TYPE_BOOL,
+  
+  
+  // literal
+  TOKEN_LIT_STRING,
+  TOKEN_LIT_NUMBER,
+  TOKEN_LIT_FLOAT,
+  TOKEN_LIT_BOOL,
+  
+  
+  // operator
+  TOKEN_OP_ASSIGN,
+  TOKEN_OP_ADD,
+  TOKEN_OP_SUB,
+  TOKEN_OP_MUL,
+  TOKEN_OP_DIV,
+  
+  
+  // symbol
+  TOKEN_LPAREN,
+  TOKEN_RPAREN,
+  
+  
+  TOKEN_IDENTIFIER,
+  TOKEN_SEMICOLON,
+  TOKEN_EOF,
+  TOKEN_ERROR
+} TokenType;
+
+// Max length of token text data
+#define TOKEN_MAX_LEN 256
+
+// Store token information
+typedef struct {
+  TokenType type;
+  
+  // Token text data
+  char value[TOKEN_MAX_LEN];
+  
+  // Source line where token was read
+  int line;
+} Token;
+
+// Initialize lexer source
+void LexerInit(char* source);
+
+// Read next token
+Token LexerNext();
+
+#endif
