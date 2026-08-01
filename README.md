@@ -23,7 +23,7 @@ The Virtual Machine handles program execution, memory management, and runtime op
 
 ## Code Example
 
-```
+```el
 print "Hello, World!";
 print "This is El Virtual Machine";
 
@@ -48,6 +48,8 @@ print violet;
 
 if(elfaria == 10 and violet >= 1) =
   print "Elfaria == 10";
+  if(elfaria > 0 or elfaria < 11) =
+    print "Elfaria between 0 and 11";
 else if(elfaria < 10) =
   print "Elfaria < 10";
 else =
