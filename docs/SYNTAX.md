@@ -144,3 +144,15 @@ it's same with :
 ```el
 if(life == true) =
 ```
+
+Ore use **!** to create false statement likes :
+
+```el
+if(!live) =
+```
+
+same with :
+
+```el
+if(live == false)
+```
