@@ -116,3 +116,14 @@ if(condision) =
 else if(condision) =
  //
 ```
+
+#### Multiple if statement
+
+You can create a multiple if statement.
+
+Example :
+
+```el
+if(condision) =
+  if(condision) =
+```
