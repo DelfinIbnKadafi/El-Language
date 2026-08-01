@@ -136,11 +136,23 @@ For Examples :
 if you create this.
 
 ```el
-if(live) =
+if(life) =
 ```
 
 it's same with :
 
 ```el
 if(life == true) =
+```
+
+Or use **!** for false equals.
+
+```el
+if(!life) =
+```
+
+same with :
+
+```el
+if(life == false) =
 ```
