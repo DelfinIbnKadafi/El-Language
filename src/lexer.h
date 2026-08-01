@@ -7,6 +7,10 @@ typedef enum {
   TOKEN_KW_EXIT,
   TOKEN_KW_PRINT,
   TOKEN_KW_VAR,
+  TOKEN_KW_IF,
+  TOKEN_KW_ELSE,
+  TOKEN_KW_OR,
+  TOKEN_KW_AND,
   
   
   // data type
@@ -29,6 +33,17 @@ typedef enum {
   TOKEN_OP_SUB,
   TOKEN_OP_MUL,
   TOKEN_OP_DIV,
+  TOKEN_OP_INC,
+  TOKEN_OP_DEC,
+  
+  
+  // comparison operator
+  TOKEN_OP_GT,
+  TOKEN_OP_LT,
+  TOKEN_OP_EQ,
+  TOKEN_OP_GE,
+  TOKEN_OP_LE,
+  TOKEN_OP_NE,
   
   
   // symbol
@@ -54,6 +69,9 @@ typedef struct {
   
   // Source line where token was read
   int line;
+  
+  // Source column where token was read, used for indentation-based blocks
+  int column;
 } Token;
 
 // Initialize lexer source

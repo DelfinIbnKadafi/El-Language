@@ -21,6 +21,8 @@ Note : The syntax flow follows each new update.
    ```
 ## 2. Exit
 
+Use this if you wanna stop a program/elvm.
+
    ```el
    exit;
    ```
@@ -52,7 +54,10 @@ Note : The syntax flow follows each new update.
    ```el
    age = 10;
    did_you_love_me = false;
+   age++;
+   age--;
    ```
+   
 ## Math
 
 ```el
@@ -63,4 +68,51 @@ Note : The syntax flow follows each new update.
 Example :
 ```el
 age = 10 - 1;
+```
+
+## If/Else
+
+#### If
+
+Use this syntax for write if statement:
+
+```el
+if(condision) =
+  // code here
+```
+
+You can use 1 or more space indentation for if/else statement.
+
+Example :
+```el
+if(Elfaria > 10) =
+  // 2 indentation
+if(Elfaria < 10) =
+ // 1 indentation
+```
+
+#### Else
+
+Use this syntax to create else statment, else statement should have if statement first.
+
+Example :
+
+```el
+if(condision) =
+  //
+else =
+  //
+```
+
+#### Else if
+
+Else statement doesn't have condision, but else if needed a condision.
+
+For Example :
+
+```el
+if(condision) =
+  //
+else if(condision) =
+ //
 ```

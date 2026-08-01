@@ -10,6 +10,9 @@ int position;
 // Current source line
 int line;
 
+// Source index of the start of the current line, used to compute column
+int lineStart;
+
 // Check if character can be part of a word
 int IsWordChar(char c) {
   return (c >= 'a' && c <= 'z') ||
@@ -27,6 +30,9 @@ void LexerInit(char* input) {
   
   // Reset line counter
   line = 1;
+  
+  // Reset column tracking
+  lineStart = 0;
 }
 
 Token LexerNext() {
@@ -38,13 +44,16 @@ Token LexerNext() {
         source[position] == '\t') {
     if(source[position] == '\n') {
       line++;
+      
+      lineStart = position + 1;
     }
     
     position++;
   }
   
-  // Mark token start line
+  // Mark token start line and column
   token.line = line;
+  token.column = position - lineStart + 1;
   
   // Check end of source
   if(source[position] == '\0') {
@@ -73,6 +82,34 @@ Token LexerNext() {
     position += 3;
     
     token.type = TOKEN_KW_VAR;
+    return token;
+  }
+  // Read if keyword
+  if(strncmp(&source[position], "if", 2) == 0 && !IsWordChar(source[position + 2])) {
+    position += 2;
+    
+    token.type = TOKEN_KW_IF;
+    return token;
+  }
+  // Read else keyword
+  if(strncmp(&source[position], "else", 4) == 0 && !IsWordChar(source[position + 4])) {
+    position += 4;
+    
+    token.type = TOKEN_KW_ELSE;
+    return token;
+  }
+  // Read or keyword
+  if(strncmp(&source[position], "or", 2) == 0 && !IsWordChar(source[position + 2])) {
+    position += 2;
+    
+    token.type = TOKEN_KW_OR;
+    return token;
+  }
+  // Read and keyword
+  if(strncmp(&source[position], "and", 3) == 0 && !IsWordChar(source[position + 3])) {
+    position += 3;
+    
+    token.type = TOKEN_KW_AND;
     return token;
   }
   
@@ -202,22 +239,78 @@ Token LexerNext() {
   
   
   // operator
-  // Read assignment operator
+  // Read equal / assign operator
   if(source[position] == '=') {
+    if(source[position + 1] == '=') {
+      position += 2;
+      
+      token.type = TOKEN_OP_EQ;
+      return token;
+    }
+    
     position++;
     
     token.type = TOKEN_OP_ASSIGN;
     return token;
   }
-  // Read add operator
+  // Read not-equal operator
+  if(source[position] == '!' && source[position + 1] == '=') {
+    position += 2;
+    
+    token.type = TOKEN_OP_NE;
+    return token;
+  }
+  // Read greater / greater-equal operator
+  if(source[position] == '>') {
+    if(source[position + 1] == '=') {
+      position += 2;
+      
+      token.type = TOKEN_OP_GE;
+      return token;
+    }
+    
+    position++;
+    
+    token.type = TOKEN_OP_GT;
+    return token;
+  }
+  // Read less / less-equal operator
+  if(source[position] == '<') {
+    if(source[position + 1] == '=') {
+      position += 2;
+      
+      token.type = TOKEN_OP_LE;
+      return token;
+    }
+    
+    position++;
+    
+    token.type = TOKEN_OP_LT;
+    return token;
+  }
+  // Read increment / add operator
   if(source[position] == '+') {
+    if(source[position + 1] == '+') {
+      position += 2;
+      
+      token.type = TOKEN_OP_INC;
+      return token;
+    }
+    
     position++;
     
     token.type = TOKEN_OP_ADD;
     return token;
   }
-  // Read sub operator
+  // Read decrement / sub operator
   if(source[position] == '-') {
+    if(source[position + 1] == '-') {
+      position += 2;
+      
+      token.type = TOKEN_OP_DEC;
+      return token;
+    }
+    
     position++;
     
     token.type = TOKEN_OP_SUB;

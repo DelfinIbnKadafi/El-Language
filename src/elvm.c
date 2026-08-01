@@ -8,7 +8,7 @@
 Variable variables[MAX_VARIABLES];
 int variableCount = 0;
 
-// Evaluation stack, used for numeric expression math (int, float, bool)
+// Evaluation stack, used for numeric expression math (int, float, bool, comparisons)
 double stack[MAX_STACK];
 int stackTop = 0;
 
@@ -145,6 +145,73 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         
         Push((double) ((long) a / (long) b));
+        break;
+      }
+      case OP_CMP_GT: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push(a > b ? 1 : 0);
+        break;
+      }
+      case OP_CMP_LT: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push(a < b ? 1 : 0);
+        break;
+      }
+      case OP_CMP_EQ: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push(a == b ? 1 : 0);
+        break;
+      }
+      case OP_CMP_GE: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push(a >= b ? 1 : 0);
+        break;
+      }
+      case OP_CMP_LE: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push(a <= b ? 1 : 0);
+        break;
+      }
+      case OP_CMP_NE: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push(a != b ? 1 : 0);
+        break;
+      }
+      case OP_AND: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push((a != 0 && b != 0) ? 1 : 0);
+        break;
+      }
+      case OP_OR: {
+        double b = Pop();
+        double a = Pop();
+        
+        Push((a != 0 || b != 0) ? 1 : 0);
+        break;
+      }
+      case OP_JUMP:
+        ip = instruction.jumpTarget;
+        break;
+      case OP_JUMP_IF_FALSE: {
+        double condition = Pop();
+        
+        if(condition == 0) {
+          ip = instruction.jumpTarget;
+        }
         break;
       }
       case OP_HALT:

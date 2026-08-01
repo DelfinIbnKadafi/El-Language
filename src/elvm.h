@@ -27,7 +27,17 @@ typedef enum {
   OP_SUB,
   OP_MUL,
   OP_DIV,
-  OP_IDIV
+  OP_IDIV,
+  OP_CMP_GT,
+  OP_CMP_LT,
+  OP_CMP_EQ,
+  OP_CMP_GE,
+  OP_CMP_LE,
+  OP_CMP_NE,
+  OP_AND,
+  OP_OR,
+  OP_JUMP,
+  OP_JUMP_IF_FALSE
 } Opcode;
 
 // Supported variable types
@@ -75,6 +85,9 @@ typedef struct {
   
   // Source line, used to report runtime errors (e.g. OP_DIV, OP_IDIV)
   int line;
+  
+  // Bytecode index to jump to, used by OP_JUMP and OP_JUMP_IF_FALSE
+  int jumpTarget;
 } Instruction;
 
 // Execute bytecode
