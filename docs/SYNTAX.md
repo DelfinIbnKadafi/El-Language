@@ -156,3 +156,13 @@ same with :
 ```el
 if(life == false) =
 ```
+
+#### Or And operator
+
+You also can use **or** **and** operator.
+
+Like :
+
+```el
+if(condision or condision)
+```
