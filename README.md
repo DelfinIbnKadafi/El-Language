@@ -46,6 +46,13 @@ var float violet;
 violet = elfaria / (decimal * 10);
 print violet;
 
+if(elfaria == 10 and violet >= 1) =
+  print "Elfaria == 10";
+else if(elfaria < 10) =
+  print "Elfaria < 10";
+else =
+  print "Elfaria isn't 10";
+
 exit;
 ```
 
