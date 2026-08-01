@@ -127,3 +127,20 @@ Example :
 if(condision) =
   if(condision) =
 ```
+
+
+You also can use of statement for boolean type.
+
+For Examples :
+
+if you create this.
+
+```el
+if(live) =
+```
+
+it's same with :
+
+```el
+if(life == true) =
+```
