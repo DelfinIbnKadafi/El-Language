@@ -1,25 +1,26 @@
+/* EL LANGUAGE */
+
+// 0.0.1 - Print
 print "Hello, World!";
 print "This is El Virtual Machine";
 
+// 0.0.2 - Variables and Math
 var int elfaria = 10;
 print elfaria;
 print elfaria + 10;
 elfaria = 10;
 print elfaria;
-
 var str will = "Will Serfort";
 var bool colette = true;
 var float decimal;
-
 print will;
 print colette;
-
 decimal = 1.0;
-
 var float violet;
 violet = elfaria / (decimal * 10);
 print violet;
 
+// 0.1.0 - If/Else/Else If Statement
 if(elfaria == 10 and violet >= 1) =
   print "Elfaria == 10";
   if(elfaria > 0) =
@@ -28,5 +29,11 @@ else if(elfaria < 10) =
   print "Elfaria < 10";
 else =
   print "Elfaria isn't 10";
+
+// 0.1.1 - Improve and Fix If/Else/Else If Statement and Comentarry
+if(elfaria != 1) = elfaria = 1; print "Elfaria 1 for now";
+else =
+
+// Empty Statement, and this is comentarry
 
 exit;

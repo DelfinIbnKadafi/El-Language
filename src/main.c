@@ -163,6 +163,10 @@ Token ParseIfStatement(int chainColumn);
 ExprResult ParseNumericFactor(Token token) {
   ExprResult result = {0};
   
+  if(token.type == TOKEN_ERROR) {
+    CompileError(token.line, "%s", token.value);
+  }
+  
   // Parenthesized sub-expression
   if(token.type == TOKEN_LPAREN) {
     ExprResult inner = ParseNumericExpression(LexerNext());
@@ -294,6 +298,10 @@ ExprResult ParseNumericExpression(Token token) {
 StringResult ParseStringValue(Token token) {
   StringResult result = {0};
   
+  if(token.type == TOKEN_ERROR) {
+    CompileError(token.line, "%s", token.value);
+  }
+  
   if(token.type == TOKEN_LIT_STRING) {
     strncpy(result.literal, token.value, INSTRUCTION_MAX_LEN - 1);
     result.literal[INSTRUCTION_MAX_LEN - 1] = '\0';
@@ -326,6 +334,10 @@ StringResult ParseStringValue(Token token) {
 
 // Parse a single bool value: true/false literal or bool variable reference (no math allowed)
 Token ParseBoolValue(Token token) {
+  if(token.type == TOKEN_ERROR) {
+    CompileError(token.line, "%s", token.value);
+  }
+  
   if(token.type == TOKEN_LIT_BOOL) {
     Instruction instruction = {0};
     
@@ -499,20 +511,48 @@ CondResult ParseOrExpr(Token token) {
   return left;
 }
 
-// Parse an indented block of statements. 'token' is the first token of the block.
-// 'parentColumn' is the column of the if/else keyword that owns this block; the
-// block's own indentation is inferred from 'token' and must be deeper than that.
-// Returns the lookahead token that follows the block (first token at or below its indentation).
-Token ParseBlock(Token token, int parentColumn) {
+// Parse the body of an if / else if / else clause. 'token' is the first token
+// after the '='. 'parentColumn' is the column of the if/else keyword that owns
+// this body. 'headerLine' is the source line of the '=' that opened this body.
+//
+// Three forms are supported:
+//   - Inline: one or more statements on the same line as '=', separated by ';'
+//   - Indented: statements on following lines, indented deeper than parentColumn
+//   - Empty: nothing follows (next token is EOF, 'else', or not indented) - a no-op
+//
+// Returns the lookahead token that follows the body.
+Token ParseBlock(Token token, int parentColumn, int headerLine) {
+  if(token.type == TOKEN_EOF || token.type == TOKEN_KW_ELSE) {
+    return token;
+  }
+  
+  if(token.line == headerLine) {
+    // Inline body, written on the same line as '='
+    int blockLine = token.line;
+    
+    token = ParseStatement(token);
+    
+    while(token.line == blockLine &&
+          token.type != TOKEN_EOF &&
+          token.type != TOKEN_KW_ELSE) {
+      token = ParseStatement(token);
+    }
+    
+    return token;
+  }
+  
   if(token.column <= parentColumn) {
-    CompileError(token.line, "Expected indented block");
+    // Nothing indented, empty body
+    return token;
   }
   
   int blockColumn = token.column;
   
   token = ParseStatement(token);
   
-  while(token.column == blockColumn && token.type != TOKEN_EOF) {
+  while(token.column == blockColumn &&
+        token.type != TOKEN_EOF &&
+        token.type != TOKEN_KW_ELSE) {
     token = ParseStatement(token);
   }
   
@@ -548,7 +588,7 @@ Token ParseIfStatement(int chainColumn) {
   
   int jumpIfFalseIndex = EmitInstruction(jumpIfFalse);
   
-  Token afterBlock = ParseBlock(LexerNext(), chainColumn);
+  Token afterBlock = ParseBlock(LexerNext(), chainColumn, assign.line);
   
   // Check for a matching else / else if at the same column as this chain
   if(afterBlock.type == TOKEN_KW_ELSE && afterBlock.column == chainColumn) {
@@ -571,7 +611,7 @@ Token ParseIfStatement(int chainColumn) {
         CompileError(afterElse.line, "Expected =");
       }
       
-      afterBlock = ParseBlock(LexerNext(), chainColumn);
+      afterBlock = ParseBlock(LexerNext(), chainColumn, afterElse.line);
     }
     
     bytecode[jumpEndIndex].jumpTarget = bytecodeCount;
@@ -586,7 +626,7 @@ Token ParseIfStatement(int chainColumn) {
 // Parse one full statement, returning the lookahead token that follows it
 Token ParseStatement(Token token) {
   if(token.type == TOKEN_ERROR) {
-    CompileError(token.line, "Unexpected character");
+    CompileError(token.line, "%s", token.value);
   }
   
   // Handle var declaration

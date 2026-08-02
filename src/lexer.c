@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 #include "lexer.h"
 
@@ -38,17 +39,66 @@ void LexerInit(char* input) {
 Token LexerNext() {
   Token token;
   
-  // Skip whitespace
-  while(source[position] == ' ' ||
-        source[position] == '\n' ||
-        source[position] == '\t') {
+  // Skip whitespace and comments
+  while(1) {
+    if(source[position] == ' ' || source[position] == '\t') {
+      position++;
+      continue;
+    }
+    
     if(source[position] == '\n') {
       line++;
       
-      lineStart = position + 1;
+      position++;
+      
+      lineStart = position;
+      continue;
     }
     
-    position++;
+    // Skip line comment
+    if(source[position] == '/' && source[position + 1] == '/') {
+      position += 2;
+      
+      while(source[position] != '\n' && source[position] != '\0') {
+        position++;
+      }
+      
+      continue;
+    }
+    
+    // Skip block comment
+    if(source[position] == '/' && source[position + 1] == '*') {
+      position += 2;
+      
+      while(!(source[position] == '*' && source[position + 1] == '/') &&
+            source[position] != '\0') {
+        if(source[position] == '\n') {
+          line++;
+          
+          position++;
+          
+          lineStart = position;
+        } else {
+          position++;
+        }
+      }
+      
+      if(source[position] == '*' && source[position + 1] == '/') {
+        position += 2;
+        
+        continue;
+      }
+      
+      // Reached end of file without a closing */
+      token.line = line;
+      token.column = position - lineStart + 1;
+      token.type = TOKEN_ERROR;
+      
+      strcpy(token.value, "Unterminated comment");
+      return token;
+    }
+    
+    break;
   }
   
   // Mark token start line and column
@@ -368,6 +418,8 @@ Token LexerNext() {
   }
   
   // Unknown character
+  sprintf(token.value, "Unexpected character '%c'", source[position]);
+  
   token.type = TOKEN_ERROR;
   
   position++;

@@ -1,63 +1,70 @@
 # Syntax
 
-Note : The syntax flow follows each new update.
+**Note:** The syntax shown here reflects the latest version of the language and will be updated as new features are added.
 
 ## 1. Print
 
-   ```el
-   print "Text";
-   ```
+```el
+print "Text";
+```
 
-   Example :
-   ```el
-   print "Hello Word!";
-   ```
+Example:
 
-   ```el
-   print variable;
-   ```
-   ```el
-   print 1 + 10;
-   ```
+```el
+print "Hello World!";
+```
+
+You can also print variables or expressions.
+
+```el
+print variable;
+```
+
+```el
+print 1 + 10;
+```
+
 ## 2. Exit
 
-Use this if you wanna stop a program/elvm.
+Use this statement to stop the program execution.
 
-   ```el
-   exit;
-   ```
-   
+```el
+exit;
+```
+
 ## 3. Variable
 
-   #### Declaration
+#### Declaration
 
-   ```el
-   var data_type name;
-   ```
+```el
+var data_type name;
+```
 
-   Example :
-   ```el
-   var int age = 10;
-   var bool did_you_love_me;
-   ```
+Example:
 
-   Supported Data Type :
-   - int
-   - str
-   - bool
-   - float
+```el
+var int age = 10;
+var bool did_you_love_me;
+```
 
-   #### Usage
+Supported Data Types:
 
-   Example :
+- int
+- str
+- bool
+- float
 
-   ```el
-   age = 10;
-   did_you_love_me = false;
-   age++;
-   age--;
-   ```
-   
+#### Usage
+
+Example:
+
+```el
+age = 10;
+did_you_love_me = false;
+age++;
+age--;
+```
+
 ## Math
 
 ```el
@@ -65,7 +72,8 @@ Use this if you wanna stop a program/elvm.
 (10 + 5) * 5
 ```
 
-Example :
+Example:
+
 ```el
 age = 10 - 1;
 ```
@@ -74,31 +82,33 @@ age = 10 - 1;
 
 #### If
 
-Use this syntax for write if statement:
+Use this syntax to create an `if` statement.
 
 ```el
-if(condision) =
+if(condition) =
   // code here
 ```
 
-You can use 1 or more space indentation for if/else statement.
+The indentation width is flexible. You can use one or more spaces, as long as the block is consistently indented.
 
-Example :
+Example:
+
 ```el
 if(Elfaria > 10) =
-  // 2 indentation
+  // 2-space indentation
+
 if(Elfaria < 10) =
- // 1 indentation
+ // 1-space indentation
 ```
 
 #### Else
 
-Use this syntax to create else statment, else statement should have if statement first.
+Use `else` after an `if` statement. An `else` statement cannot exist without a preceding `if`.
 
-Example :
+Example:
 
 ```el
-if(condision) =
+if(condition) =
   //
 else =
   //
@@ -106,63 +116,95 @@ else =
 
 #### Else if
 
-Else statement doesn't have condision, but else if needed a condision.
+Unlike `else`, `else if` requires a condition.
 
-For Example :
+Example:
 
 ```el
-if(condision) =
+if(condition) =
   //
-else if(condision) =
- //
+else if(condition) =
+  //
 ```
 
-#### Multiple if statement
+#### Multiple If Statement
 
-You can create a multiple if statement.
+You can nest multiple `if` statements.
 
-Example :
+Example:
 
 ```el
-if(condision) =
-  if(condision) =
+if(condition) =
+  if(condition) =
 ```
 
+You can also use a boolean variable directly as the condition.
 
-You also can use of statement for boolean type.
-
-For Examples :
-
-if you create this.
+Example:
 
 ```el
 if(life) =
 ```
 
-it's same with :
+This is equivalent to:
 
 ```el
 if(life == true) =
 ```
 
-Or use **!** for false equals.
+Use `!` to check for `false`.
 
 ```el
 if(!life) =
 ```
 
-same with :
+This is equivalent to:
 
 ```el
 if(life == false) =
 ```
 
-#### Or And operator
+#### Or/And Operator
 
-You also can use **or** **and** operator.
+You can combine multiple conditions using the `or` and `and` operators.
 
-Like :
+Example:
 
 ```el
-if(condision or condision)
+if(condition or condition)
+```
+
+#### One-Line Statement
+
+You can write statements on the same line as the `if`.
+
+Example:
+
+```el
+if(condition) = code; code;
+```
+
+#### Empty Statement
+
+If an `if` or `else` block is empty, ELVM simply skips its execution.
+
+Example:
+
+```el
+if(condition) =
+```
+
+## Commentary
+
+Like most programming languages, EL supports comments. Text inside comments is ignored and never executed by ELVM.
+
+Example:
+
+```el
+// This is a single-line comment.
+
+/*
+This is
+a multi-line comment.
+*/
 ```
