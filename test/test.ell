@@ -22,6 +22,8 @@ print violet;
 
 if(elfaria == 10 and violet >= 1) =
   print "Elfaria == 10";
+  if(elfaria > 0) =
+    print "Elfaria != 0";
 else if(elfaria < 10) =
   print "Elfaria < 10";
 else =
