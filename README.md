@@ -29,33 +29,33 @@ The Virtual Machine handles program execution, memory management, and runtime op
 print "Hello, World!";
 print "This is El Virtual Machine";
 
-var int elfaria = 10;
-print elfaria;
-print elfaria + 10;
-elfaria = 10;
-print elfaria;
+var int integer = 10;
+print integer;
+print integer + 10;
+integer = 10;
+print integer;
 
-var str will = "Will Serfort";
-var bool colette = true;
+var str string = "Very Impresive Language!";
+var bool boolean = true;
 var float decimal;
 
-print will;
-print colette;
+print string;
+print boolean;
 
 decimal = 1.0;
 
-var float violet;
-violet = elfaria / (decimal * 10);
-print violet;
+var float el;
+el = integer / (decimal * 10);
+print el;
 
-if(elfaria == 10 and violet >= 1) =
-  print "Elfaria == 10";
-  if(elfaria > 0 or elfaria < 11) =
-    print "Elfaria between 0 and 11";
-else if(elfaria < 10) =
-  print "Elfaria < 10";
+if(integer == 10 and el >= 1) =
+  print "Integer == 10";
+  if(integer > 0 or integer < 11) =
+    print "Integer between 0 and 11";
+else if(integer < 10) =
+  print "Integer < 10";
 else =
-  print "Elfaria isn't 10";
+  print "Integer isn't 10";
 
 exit;
 ```
