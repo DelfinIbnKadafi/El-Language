@@ -2,6 +2,10 @@
   El Language 0.0.1 Alpha - print
   El Language 0.0.2 Alpha - Variable (int, str, bool, float) and math
   El Language 0.1.0 - if / else if / else, comparison, and increment/decrement
+  El Language 0.1.1 - comments (line and block), inline single-line block body,
+                      empty if/else/else if body no longer errors
+  El Language 0.1.2 - fixed block body leaking out after inline+indented mix,
+                      added unary minus/plus, clearer error messages
 */
 
 // include libary
@@ -165,6 +169,35 @@ ExprResult ParseNumericFactor(Token token) {
   
   if(token.type == TOKEN_ERROR) {
     CompileError(token.line, "%s", token.value);
+  }
+  
+  // Unary minus, computed as (0 - value) so it reuses OP_SUB
+  if(token.type == TOKEN_OP_SUB) {
+    Instruction zero = {0};
+    
+    zero.opcode = OP_PUSH_NUMBER;
+    zero.numberValue = 0;
+    
+    EmitInstruction(zero);
+    
+    ExprResult inner = ParseNumericFactor(LexerNext());
+    
+    Instruction sub = {0};
+    
+    sub.opcode = OP_SUB;
+    sub.line = token.line;
+    
+    EmitInstruction(sub);
+    
+    result.type = inner.type;
+    result.next = inner.next;
+    
+    return result;
+  }
+  
+  // Unary plus, no-op
+  if(token.type == TOKEN_OP_ADD) {
+    return ParseNumericFactor(LexerNext());
   }
   
   // Parenthesized sub-expression
@@ -515,44 +548,30 @@ CondResult ParseOrExpr(Token token) {
 // after the '='. 'parentColumn' is the column of the if/else keyword that owns
 // this body. 'headerLine' is the source line of the '=' that opened this body.
 //
-// Three forms are supported:
-//   - Inline: one or more statements on the same line as '=', separated by ';'
-//   - Indented: statements on following lines, indented deeper than parentColumn
-//   - Empty: nothing follows (next token is EOF, 'else', or not indented) - a no-op
-//
-// Returns the lookahead token that follows the body.
+// The body may start inline (same line as '=') and/or continue on following
+// lines indented deeper than parentColumn, in any combination and in any order.
+// A statement is considered part of the body as long as it is either on the
+// same source line as the previous statement in the body, or indented deeper
+// than parentColumn. The body ends at EOF, at 'else', or at the first token
+// that satisfies neither condition. An empty body (nothing follows) is a no-op.
 Token ParseBlock(Token token, int parentColumn, int headerLine) {
   if(token.type == TOKEN_EOF || token.type == TOKEN_KW_ELSE) {
     return token;
   }
   
-  if(token.line == headerLine) {
-    // Inline body, written on the same line as '='
-    int blockLine = token.line;
-    
-    token = ParseStatement(token);
-    
-    while(token.line == blockLine &&
-          token.type != TOKEN_EOF &&
-          token.type != TOKEN_KW_ELSE) {
-      token = ParseStatement(token);
-    }
-    
+  if(token.line != headerLine && token.column <= parentColumn) {
+    // Nothing on the header line, and the next line isn't indented either
     return token;
   }
   
-  if(token.column <= parentColumn) {
-    // Nothing indented, empty body
-    return token;
-  }
-  
-  int blockColumn = token.column;
+  int lastLine = token.line;
   
   token = ParseStatement(token);
   
-  while(token.column == blockColumn &&
-        token.type != TOKEN_EOF &&
-        token.type != TOKEN_KW_ELSE) {
+  while(token.type != TOKEN_EOF && token.type != TOKEN_KW_ELSE &&
+        (token.line == lastLine || token.column > parentColumn)) {
+    lastLine = token.line;
+    
     token = ParseStatement(token);
   }
   
