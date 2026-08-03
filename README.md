@@ -4,8 +4,6 @@ El Language is a high-level programming language designed with a custom Virtual 
 
 The language focuses on simplicity, productivity, and portability while providing an independent execution environment through its Virtual Machine.
 
-![Logo](logo.png)
-
 ## Architecture
 
 El Language programs are compiled and executed through the El Virtual Machine.
