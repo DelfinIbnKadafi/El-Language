@@ -208,3 +208,90 @@ This is
 a multi-line comment.
 */
 ```
+
+## Array Variable
+
+EL supports array variables for all supported data types:
+
+- int
+- float
+- bool
+- str
+
+#### Declaration
+
+```el
+var data_type name[size];
+```
+
+Example:
+
+```el
+var int numbers[5];
+var str names[10];
+var bool status[3];
+```
+
+Array indexing starts from 0 and ends at size - 1.
+
+Example:
+
+```
+numbers[0] = 10;
+numbers[4] = 50;
+```
+
+EL uses a zero-based indexing system, similar to Pawn.
+
+Usage
+
+Arrays must always be accessed using an index.
+
+Example:
+
+```el
+print numbers[0];
+```
+
+Accessing an array variable without an index will produce an error.
+
+Invalid example:
+
+```el
+print numbers;
+```
+
+ELVM will report a clear error instead of executing the statement.
+
+Sized String
+
+EL supports fixed-size strings using the str[size] syntax.
+
+Declaration
+
+```el
+var str[size] name;
+```
+
+Example:
+
+```el
+var str[5] username;
+```
+
+A sized string can only store characters up to the specified size.
+
+If an assigned string exceeds the limit, EL automatically truncates the value.
+
+Example:
+
+```
+var str[5] text;
+text = "HelloWorld";
+```
+
+The stored value becomes:
+
+"Hello"
+
+Extra characters are removed automatically, and the program continues execution without crashing.
