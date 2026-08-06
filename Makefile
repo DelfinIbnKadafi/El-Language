@@ -12,6 +12,7 @@ TARGET = $(BUILD)/elvm
 
 FILES = \
   $(SRC)/main.c \
+  $(SRC)/parser.c \
   $(SRC)/lexer.c \
   $(SRC)/elvm.c
 

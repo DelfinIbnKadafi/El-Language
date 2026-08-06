@@ -49,6 +49,8 @@ typedef enum {
   // symbol
   TOKEN_LPAREN,
   TOKEN_RPAREN,
+  TOKEN_LBRACKET,
+  TOKEN_RBRACKET,
   
   
   TOKEN_IDENTIFIER,

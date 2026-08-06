@@ -8,9 +8,12 @@
 Variable variables[MAX_VARIABLES];
 int variableCount = 0;
 
-// Evaluation stack, used for numeric expression math (int, float, bool, comparisons)
+// Evaluation stack, used for numeric expression math (int, float, bool, comparisons, indices)
 double stack[MAX_STACK];
 int stackTop = 0;
+
+// Current running file, used for runtime error messages
+char* currentFilename;
 
 // Push value onto evaluation stack
 void Push(double value) {
@@ -22,22 +25,45 @@ double Pop() {
   return stack[--stackTop];
 }
 
-// Copy string literal or source variable text into destination variable
-void StoreString(Instruction instruction) {
-  char* text;
+// Validate an array index is within bounds, stopping the program with a clear
+// error if not. Returns the index as an int for convenience.
+int CheckBounds(double rawIndex, int size, int line) {
+  int index = (int) rawIndex;
   
-  if(instruction.srcVarIndex != -1) {
-    text = variables[instruction.srcVarIndex].stringValue;
-  } else {
-    text = instruction.stringLiteral;
+  if(index < 0 || index >= size) {
+    printf("%s (%d) : Array index %d out of bounds (size %d)\n", currentFilename, line, index, size);
+    exit(1);
   }
   
-  strncpy(variables[instruction.varIndex].stringValue, text, INSTRUCTION_MAX_LEN - 1);
-  variables[instruction.varIndex].stringValue[INSTRUCTION_MAX_LEN - 1] = '\0';
+  return index;
+}
+
+// Resolve the string to copy for OP_DECLARE_STR / OP_STORE_STR into 'out': either
+// a literal, a whole scalar variable, or one element of an array variable (index
+// popped from the stack when srcIsArray is set).
+void ResolveStoreSource(Instruction instruction, char* out, int outSize) {
+  char* text;
+  
+  if(instruction.srcVarIndex == -1) {
+    text = instruction.stringLiteral;
+  } else {
+    int srcIdx = 0;
+    
+    if(instruction.srcIsArray) {
+      srcIdx = CheckBounds(Pop(), variables[instruction.srcVarIndex].arraySize, instruction.line);
+    }
+    
+    text = variables[instruction.srcVarIndex].strings[srcIdx];
+  }
+  
+  strncpy(out, text, outSize);
+  out[outSize] = '\0';
 }
 
 void VMRun(Instruction* code, int count, char* filename) {
   int ip = 0;
+  
+  currentFilename = filename;
   
   while(ip < count) {
     Instruction instruction = code[ip++];
@@ -58,9 +84,16 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         break;
       }
-      case OP_PRINT_STR_VAR:
-        printf("%s\n", variables[instruction.varIndex].stringValue);
+      case OP_PRINT_STR_VAR: {
+        int idx = 0;
+        
+        if(instruction.destIsArray) {
+          idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+        }
+        
+        printf("%s\n", variables[instruction.varIndex].strings[idx]);
         break;
+      }
       case OP_DECLARE_INT:
       case OP_DECLARE_FLOAT:
       case OP_DECLARE_BOOL:
@@ -75,33 +108,73 @@ void VMRun(Instruction* code, int count, char* filename) {
           variables[instruction.varIndex].type = VAR_BOOL;
         }
         
-        variables[instruction.varIndex].numberValue = Pop();
+        variables[instruction.varIndex].isArray = instruction.isArray;
+        variables[instruction.varIndex].arraySize = instruction.isArray ? instruction.arraySize : 1;
+        
+        if(!instruction.isArray) {
+          // Scalar: pop its single initializer value
+          variables[instruction.varIndex].numbers[0] = Pop();
+        }
+        // Arrays start zero-initialized (static storage default), no initializer supported
+        
         variableCount++;
         break;
-      case OP_DECLARE_STR:
+      case OP_DECLARE_STR: {
         strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
         variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
         
         variables[instruction.varIndex].type = VAR_STR;
+        variables[instruction.varIndex].isArray = instruction.isArray;
+        variables[instruction.varIndex].arraySize = instruction.isArray ? instruction.arraySize : 1;
+        variables[instruction.varIndex].strSize =
+          instruction.strSize > 0 ? instruction.strSize : (MAX_STR_LEN - 1);
         
-        StoreString(instruction);
+        if(!instruction.isArray) {
+          // Scalar: copy its single initializer string
+          int maxLen = variables[instruction.varIndex].strSize;
+          
+          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[0], maxLen);
+        }
+        // Arrays start as empty strings (zero-initialized), no initializer supported
         
         variableCount++;
         break;
+      }
       case OP_STORE_VAR:
-        // Overwrite existing int, float, or bool variable value
-        variables[instruction.varIndex].numberValue = Pop();
+        // Overwrite an existing scalar int, float, or bool variable
+        variables[instruction.varIndex].numbers[0] = Pop();
         break;
-      case OP_STORE_STR:
-        // Overwrite existing string variable value
-        StoreString(instruction);
+      case OP_STORE_STR: {
+        int destIdx = 0;
+        
+        if(instruction.destIsArray) {
+          destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+        }
+        
+        int maxLen = variables[instruction.varIndex].strSize;
+        
+        ResolveStoreSource(instruction, variables[instruction.varIndex].strings[destIdx], maxLen);
         break;
+      }
       case OP_PUSH_NUMBER:
         Push(instruction.numberValue);
         break;
       case OP_PUSH_VAR:
-        Push(variables[instruction.varIndex].numberValue);
+        Push(variables[instruction.varIndex].numbers[0]);
         break;
+      case OP_PUSH_ARR: {
+        int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+        
+        Push(variables[instruction.varIndex].numbers[idx]);
+        break;
+      }
+      case OP_STORE_ARR: {
+        double value = Pop();
+        int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+        
+        variables[instruction.varIndex].numbers[idx] = value;
+        break;
+      }
       case OP_ADD: {
         double b = Pop();
         double a = Pop();

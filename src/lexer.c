@@ -397,6 +397,20 @@ Token LexerNext() {
     token.type = TOKEN_RPAREN;
     return token;
   }
+  // Read left bracket
+  if(source[position] == '[') {
+    position++;
+    
+    token.type = TOKEN_LBRACKET;
+    return token;
+  }
+  // Read right bracket
+  if(source[position] == ']') {
+    position++;
+    
+    token.type = TOKEN_RBRACKET;
+    return token;
+  }
   
   
   // Read identifier (must come after all keyword checks above)
