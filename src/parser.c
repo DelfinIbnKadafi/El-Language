@@ -120,6 +120,9 @@ typedef struct {
   
   int srcVarIndex;
   int srcIsArray;
+  
+  // True if the value was literally the NONE keyword
+  int isNoneLiteral;
 } StringResult;
 
 // Result of parsing a condition: lookahead token and resulting type (always bool once combined)
@@ -346,6 +349,14 @@ StringResult ParseStringValue(Token token) {
     CompileError(token.line, "%s", token.value);
   }
   
+  if(token.type == TOKEN_KW_NONE) {
+    result.isNoneLiteral = 1;
+    result.srcVarIndex = -1;
+    result.next = LexerNext();
+    
+    return result;
+  }
+  
   if(token.type == TOKEN_LIT_STRING) {
     strncpy(result.literal, token.value, INSTRUCTION_MAX_LEN - 1);
     result.literal[INSTRUCTION_MAX_LEN - 1] = '\0';
@@ -379,11 +390,27 @@ StringResult ParseStringValue(Token token) {
   CompileError(token.line, "Expected string value");
 }
 
-// Parse a single bool value: true/false literal, or an existing bool variable
-// (whole, or one array element) - no math allowed
-Token ParseBoolValue(Token token) {
+// Result of parsing a bool value: lookahead token, and whether it was NONE
+typedef struct {
+  Token next;
+  
+  int isNoneLiteral;
+} BoolResult;
+
+// Parse a single bool value: true/false literal, NONE, or an existing bool
+// variable (whole, or one array element) - no math allowed
+BoolResult ParseBoolValue(Token token) {
+  BoolResult result = {0};
+  
   if(token.type == TOKEN_ERROR) {
     CompileError(token.line, "%s", token.value);
+  }
+  
+  if(token.type == TOKEN_KW_NONE) {
+    result.isNoneLiteral = 1;
+    result.next = LexerNext();
+    
+    return result;
   }
   
   if(token.type == TOKEN_LIT_BOOL) {
@@ -394,7 +421,9 @@ Token ParseBoolValue(Token token) {
     
     EmitInstruction(instruction);
     
-    return LexerNext();
+    result.next = LexerNext();
+    
+    return result;
   }
   
   if(token.type == TOKEN_IDENTIFIER) {
@@ -420,7 +449,9 @@ Token ParseBoolValue(Token token) {
     
     EmitInstruction(instruction);
     
-    return next;
+    result.next = next;
+    
+    return result;
   }
   
   CompileError(token.line, "Expected bool value");
@@ -491,7 +522,48 @@ CondResult ParseConditionOperand(Token token) {
 
 // Parse an optional comparison: operand (comparison_op operand)?
 CondResult ParseComparison(Token token) {
+  // A string variable can only ever be compared with == NONE or != NONE
+  if(token.type == TOKEN_IDENTIFIER) {
+    int strIndex = FindSymbol(token.value);
+    
+    if(strIndex != -1 && symbols[strIndex].type == VAR_STR) {
+      Token afterName = LexerNext();
+      Token afterIndex = ParseArrayIndex(strIndex, token, afterName);
+      
+      if(afterIndex.type != TOKEN_OP_EQ && afterIndex.type != TOKEN_OP_NE) {
+        CompileError(token.line, "String variable '%s' can only be compared with == NONE or != NONE", token.value);
+      }
+      
+      TokenType op = afterIndex.type;
+      int opLine = afterIndex.line;
+      
+      Token rhs = LexerNext();
+      
+      if(rhs.type != TOKEN_KW_NONE) {
+        CompileError(opLine, "String variable '%s' can only be compared with NONE", token.value);
+      }
+      
+      Instruction instruction = {0};
+      
+      instruction.opcode = (op == TOKEN_OP_EQ) ? OP_STR_IS_NONE : OP_STR_IS_NOT_NONE;
+      instruction.varIndex = strIndex;
+      instruction.destIsArray = symbols[strIndex].isArray;
+      instruction.line = token.line;
+      
+      EmitInstruction(instruction);
+      
+      CondResult result = {0};
+      
+      result.type = VAR_BOOL;
+      result.next = LexerNext();
+      
+      return result;
+    }
+  }
+  
+  int leftStart = bytecodeCount;
   CondResult left = ParseConditionOperand(token);
+  int leftEnd = bytecodeCount;
   
   TokenType op = left.next.type;
   
@@ -499,7 +571,40 @@ CondResult ParseComparison(Token token) {
      op == TOKEN_OP_GE || op == TOKEN_OP_LE || op == TOKEN_OP_NE) {
     int opLine = left.next.line;
     
-    CondResult right = ParseConditionOperand(LexerNext());
+    Token rhsToken = LexerNext();
+    
+    // "vars == NONE" / "vars != NONE": only valid directly after a bare variable reference
+    if(rhsToken.type == TOKEN_KW_NONE) {
+      if(op != TOKEN_OP_EQ && op != TOKEN_OP_NE) {
+        CompileError(opLine, "NONE can only be compared using == or !=");
+      }
+      
+      if(leftEnd == leftStart ||
+         (bytecode[leftEnd - 1].opcode != OP_PUSH_VAR && bytecode[leftEnd - 1].opcode != OP_PUSH_ARR)) {
+        CompileError(opLine, "NONE can only be compared against a variable");
+      }
+      
+      // Discard the value that was just pushed, we only care about its NONE status
+      Instruction discard = {0};
+      
+      discard.opcode = OP_POP;
+      
+      EmitInstruction(discard);
+      
+      Instruction checkNone = {0};
+      
+      checkNone.opcode = OP_PUSH_LAST_NONE_FLAG;
+      checkNone.numberValue = (op == TOKEN_OP_NE) ? 1 : 0;
+      
+      EmitInstruction(checkNone);
+      
+      left.type = VAR_BOOL;
+      left.next = LexerNext();
+      
+      return left;
+    }
+    
+    CondResult right = ParseConditionOperand(rhsToken);
     
     Instruction instruction = {0};
     
@@ -668,6 +773,91 @@ Token ParseIfStatement(int chainColumn) {
 
 // Parse a var declaration, from just after the 'var' keyword. Returns the
 // lookahead token that follows the declaration.
+// Emit bytecode to parse one value and store it into an array element, assuming
+// the destination index has already been pushed onto the stack by the caller
+// immediately before this call. Used by both the list and broadcast forms of
+// an array initializer, reusing the same per-element store opcodes as a normal
+// 'arr[i] = value;' statement. Returns the lookahead token after the value.
+Token EmitElementStore(VarType varType, int varIndex, Token valueToken) {
+  if(varType == VAR_STR) {
+    StringResult value = ParseStringValue(valueToken);
+    
+    Instruction store = {0};
+    
+    store.opcode = OP_STORE_STR;
+    store.varIndex = varIndex;
+    store.destIsArray = 1;
+    store.storeNone = value.isNoneLiteral;
+    store.srcVarIndex = value.srcVarIndex;
+    store.srcIsArray = value.srcIsArray;
+    store.line = valueToken.line;
+    
+    strncpy(store.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
+    store.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    
+    EmitInstruction(store);
+    
+    return value.next;
+  }
+  
+  if(varType == VAR_BOOL) {
+    BoolResult value = ParseBoolValue(valueToken);
+    
+    Instruction store = {0};
+    
+    store.opcode = OP_STORE_ARR;
+    store.varIndex = varIndex;
+    store.storeNone = value.isNoneLiteral;
+    store.line = valueToken.line;
+    
+    EmitInstruction(store);
+    
+    return value.next;
+  }
+  
+  // int or float
+  if(valueToken.type == TOKEN_KW_NONE) {
+    Instruction store = {0};
+    
+    store.opcode = OP_STORE_ARR;
+    store.varIndex = varIndex;
+    store.storeNone = 1;
+    store.line = valueToken.line;
+    
+    EmitInstruction(store);
+    
+    return LexerNext();
+  }
+  
+  ExprResult result = ParseNumericExpression(valueToken);
+  
+  if(varType == VAR_INT && result.type == VAR_FLOAT) {
+    CompileError(valueToken.line, "Cannot assign float value to int array element");
+  }
+  
+  Instruction store = {0};
+  
+  store.opcode = OP_STORE_ARR;
+  store.varIndex = varIndex;
+  store.line = valueToken.line;
+  
+  EmitInstruction(store);
+  
+  return result.next;
+}
+
+// Emit "push elementIndex" followed by EmitElementStore, for one list item.
+Token EmitArrayElementStore(VarType varType, int varIndex, int elementIndex, Token valueToken) {
+  Instruction pushIdx = {0};
+  
+  pushIdx.opcode = OP_PUSH_NUMBER;
+  pushIdx.numberValue = elementIndex;
+  
+  EmitInstruction(pushIdx);
+  
+  return EmitElementStore(varType, varIndex, valueToken);
+}
+
 Token ParseVarDeclaration() {
   Token type = LexerNext();
   
@@ -749,31 +939,104 @@ Token ParseVarDeclaration() {
   }
   
   if(isArray) {
-    // Arrays have no initializer in this version
-    if(next.type == TOKEN_OP_ASSIGN) {
-      CompileError(next.line, "Array declarations cannot have an initializer");
-    }
-    
-    if(next.type != TOKEN_SEMICOLON) {
-      CompileError(next.line, "Expected ;");
-    }
-    
     int index = DeclareSymbol(name.value, varType, 1, name.line);
     
-    Instruction instruction = {0};
+    Instruction declareInstr = {0};
     
-    instruction.opcode = (varType == VAR_INT) ? OP_DECLARE_INT :
-                          (varType == VAR_FLOAT) ? OP_DECLARE_FLOAT :
-                          (varType == VAR_BOOL) ? OP_DECLARE_BOOL : OP_DECLARE_STR;
-    instruction.varIndex = index;
-    instruction.isArray = 1;
-    instruction.arraySize = arraySize;
-    instruction.strSize = strSize;
+    declareInstr.opcode = (varType == VAR_INT) ? OP_DECLARE_INT :
+                           (varType == VAR_FLOAT) ? OP_DECLARE_FLOAT :
+                           (varType == VAR_BOOL) ? OP_DECLARE_BOOL : OP_DECLARE_STR;
+    declareInstr.varIndex = index;
+    declareInstr.isArray = 1;
+    declareInstr.arraySize = arraySize;
+    declareInstr.strSize = strSize;
     
-    strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
-    instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+    strncpy(declareInstr.text, name.value, INSTRUCTION_MAX_LEN - 1);
+    declareInstr.text[INSTRUCTION_MAX_LEN - 1] = '\0';
     
-    EmitInstruction(instruction);
+    EmitInstruction(declareInstr);
+    
+    // No initializer: every element stays NONE, as set up by the declare above
+    if(next.type == TOKEN_SEMICOLON) {
+      return LexerNext();
+    }
+    
+    if(next.type != TOKEN_OP_ASSIGN) {
+      CompileError(next.line, "Expected ; or =");
+    }
+    
+    Token afterAssign = LexerNext();
+    
+    if(afterAssign.type == TOKEN_LBRACE) {
+      // List form: { v1, v2, ..., vn }, applied in order starting at index 0.
+      // Any elements past the last listed value stay NONE.
+      int elementIndex = 0;
+      
+      Token itemToken = LexerNext();
+      
+      if(itemToken.type != TOKEN_RBRACE) {
+        while(1) {
+          if(elementIndex >= arraySize) {
+            CompileError(itemToken.line, "Too many initializer values for array of size %d", arraySize);
+          }
+          
+          Token afterItem = EmitArrayElementStore(varType, index, elementIndex, itemToken);
+          
+          elementIndex++;
+          
+          if(afterItem.type == TOKEN_COMMA) {
+            itemToken = LexerNext();
+            continue;
+          }
+          
+          if(afterItem.type == TOKEN_RBRACE) {
+            break;
+          }
+          
+          CompileError(afterItem.line, "Expected , or }");
+        }
+      }
+      
+      Token afterBrace = LexerNext();
+      
+      if(afterBrace.type != TOKEN_SEMICOLON) {
+        CompileError(afterBrace.line, "Expected ;");
+      }
+      
+      return LexerNext();
+    }
+    
+    // Broadcast form: a single value applied to every element. The value is
+    // parsed once (for element 0), and its bytecode is re-emitted with a fresh
+    // index for each remaining element, since this language has no side
+    // effects in expressions.
+    Instruction pushFirstIdx = {0};
+    
+    pushFirstIdx.opcode = OP_PUSH_NUMBER;
+    pushFirstIdx.numberValue = 0;
+    
+    EmitInstruction(pushFirstIdx);
+    
+    int valueStart = bytecodeCount;
+    
+    Token afterValue = EmitElementStore(varType, index, afterAssign);
+    
+    int valueEnd = bytecodeCount;
+    
+    for(int i = 1; i < arraySize; i++) {
+      Instruction pushIdx = {0};
+      
+      pushIdx.opcode = OP_PUSH_NUMBER;
+      pushIdx.numberValue = i;
+      
+      EmitInstruction(pushIdx);
+      
+      DuplicateInstructions(valueStart, valueEnd);
+    }
+    
+    if(afterValue.type != TOKEN_SEMICOLON) {
+      CompileError(afterValue.line, "Expected ;");
+    }
     
     return LexerNext();
   }
@@ -784,7 +1047,9 @@ Token ParseVarDeclaration() {
     if(next.type == TOKEN_OP_ASSIGN) {
       value = ParseStringValue(LexerNext());
     } else {
+      // No initializer at all: starts as NONE
       value.srcVarIndex = -1;
+      value.isNoneLiteral = 1;
       value.next = next;
     }
     
@@ -799,6 +1064,7 @@ Token ParseVarDeclaration() {
     instruction.opcode = OP_DECLARE_STR;
     instruction.varIndex = index;
     instruction.strSize = strSize;
+    instruction.storeNone = value.isNoneLiteral;
     instruction.srcVarIndex = value.srcVarIndex;
     instruction.srcIsArray = value.srcIsArray;
     
@@ -815,17 +1081,21 @@ Token ParseVarDeclaration() {
   
   if(varType == VAR_BOOL) {
     Token nextAfter;
+    int storeNone = 0;
+    int propagateNone = 0;
     
     if(next.type == TOKEN_OP_ASSIGN) {
-      nextAfter = ParseBoolValue(LexerNext());
+      int valueStart = bytecodeCount;
+      BoolResult value = ParseBoolValue(LexerNext());
+      int valueEnd = bytecodeCount;
+      
+      storeNone = value.isNoneLiteral;
+      propagateNone = !storeNone && valueEnd > valueStart &&
+        (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
+      nextAfter = value.next;
     } else {
-      Instruction zero = {0};
-      
-      zero.opcode = OP_PUSH_NUMBER;
-      zero.numberValue = 0;
-      
-      EmitInstruction(zero);
-      
+      // No initializer at all: starts as NONE
+      storeNone = 1;
       nextAfter = next;
     }
     
@@ -839,6 +1109,8 @@ Token ParseVarDeclaration() {
     
     instruction.opcode = OP_DECLARE_BOOL;
     instruction.varIndex = index;
+    instruction.storeNone = storeNone;
+    instruction.propagateNone = propagateNone;
     
     strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
     instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
@@ -850,24 +1122,32 @@ Token ParseVarDeclaration() {
   
   // int or float
   Token nextAfter;
+  int storeNone = 0;
+  int propagateNone = 0;
   
   if(next.type == TOKEN_OP_ASSIGN) {
     Token value = LexerNext();
-    ExprResult exprResult = ParseNumericExpression(value);
     
-    if(varType == VAR_INT && exprResult.type == VAR_FLOAT) {
-      CompileError(value.line, "Cannot assign float value to int variable '%s'", name.value);
+    if(value.type == TOKEN_KW_NONE) {
+      storeNone = 1;
+      nextAfter = LexerNext();
+    } else {
+      int valueStart = bytecodeCount;
+      ExprResult exprResult = ParseNumericExpression(value);
+      int valueEnd = bytecodeCount;
+      
+      if(varType == VAR_INT && exprResult.type == VAR_FLOAT) {
+        CompileError(value.line, "Cannot assign float value to int variable '%s'", name.value);
+      }
+      
+      propagateNone = valueEnd > valueStart &&
+        (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
+      
+      nextAfter = exprResult.next;
     }
-    
-    nextAfter = exprResult.next;
   } else {
-    Instruction zero = {0};
-    
-    zero.opcode = OP_PUSH_NUMBER;
-    zero.numberValue = 0;
-    
-    EmitInstruction(zero);
-    
+    // No initializer at all: starts as NONE
+    storeNone = 1;
     nextAfter = next;
   }
   
@@ -881,6 +1161,8 @@ Token ParseVarDeclaration() {
   
   instruction.opcode = (varType == VAR_INT) ? OP_DECLARE_INT : OP_DECLARE_FLOAT;
   instruction.varIndex = index;
+  instruction.storeNone = storeNone;
+  instruction.propagateNone = propagateNone;
   
   strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
   instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
@@ -1016,38 +1298,69 @@ Token ParseIdentifierStatement(Token token) {
     
     EmitInstruction(instruction);
   } else if(varType == VAR_BOOL) {
-    Token afterValue = ParseBoolValue(LexerNext());
+    int valueStart = bytecodeCount;
+    BoolResult value = ParseBoolValue(LexerNext());
+    int valueEnd = bytecodeCount;
     
-    if(afterValue.type != TOKEN_SEMICOLON) {
-      CompileError(afterValue.line, "Expected ;");
+    if(value.next.type != TOKEN_SEMICOLON) {
+      CompileError(value.next.line, "Expected ;");
     }
+    
+    int isBareCopy = !value.isNoneLiteral && valueEnd > valueStart &&
+      (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
     
     Instruction instruction = {0};
     
     instruction.opcode = isIndexed ? OP_STORE_ARR : OP_STORE_VAR;
     instruction.varIndex = index;
+    instruction.storeNone = value.isNoneLiteral;
+    instruction.propagateNone = isBareCopy;
     instruction.line = token.line;
     
     EmitInstruction(instruction);
   } else {
     Token value = LexerNext();
-    ExprResult result = ParseNumericExpression(value);
     
-    if(varType == VAR_INT && result.type == VAR_FLOAT) {
-      CompileError(value.line, "Cannot assign float value to int variable '%s'", token.value);
+    if(value.type == TOKEN_KW_NONE) {
+      Token semicolon = LexerNext();
+      
+      if(semicolon.type != TOKEN_SEMICOLON) {
+        CompileError(semicolon.line, "Expected ;");
+      }
+      
+      Instruction instruction = {0};
+      
+      instruction.opcode = isIndexed ? OP_STORE_ARR : OP_STORE_VAR;
+      instruction.varIndex = index;
+      instruction.storeNone = 1;
+      instruction.line = token.line;
+      
+      EmitInstruction(instruction);
+    } else {
+      int valueStart = bytecodeCount;
+      ExprResult result = ParseNumericExpression(value);
+      int valueEnd = bytecodeCount;
+      
+      if(varType == VAR_INT && result.type == VAR_FLOAT) {
+        CompileError(value.line, "Cannot assign float value to int variable '%s'", token.value);
+      }
+      
+      if(result.next.type != TOKEN_SEMICOLON) {
+        CompileError(result.next.line, "Expected ;");
+      }
+      
+      int propagateNone = valueEnd > valueStart &&
+        (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
+      
+      Instruction instruction = {0};
+      
+      instruction.opcode = isIndexed ? OP_STORE_ARR : OP_STORE_VAR;
+      instruction.varIndex = index;
+      instruction.propagateNone = propagateNone;
+      instruction.line = token.line;
+      
+      EmitInstruction(instruction);
     }
-    
-    if(result.next.type != TOKEN_SEMICOLON) {
-      CompileError(result.next.line, "Expected ;");
-    }
-    
-    Instruction instruction = {0};
-    
-    instruction.opcode = isIndexed ? OP_STORE_ARR : OP_STORE_VAR;
-    instruction.varIndex = index;
-    instruction.line = token.line;
-    
-    EmitInstruction(instruction);
   }
   
   return LexerNext();
@@ -1147,6 +1460,7 @@ Token ParsePrintStatement() {
       
       printInstruction.opcode = OP_PRINT_VALUE;
       printInstruction.valueType = VAR_BOOL;
+      printInstruction.propagateNone = 1;
       
       EmitInstruction(printInstruction);
       
@@ -1154,16 +1468,22 @@ Token ParsePrintStatement() {
     }
     
     // Int or float variable (possibly indexed), or an expression starting with an identifier
+    int valueStart = bytecodeCount;
     ExprResult result = ParseNumericExpression(value);
+    int valueEnd = bytecodeCount;
     
     if(result.next.type != TOKEN_SEMICOLON) {
       CompileError(result.next.line, "Expected ;");
     }
     
+    int isBare = valueEnd > valueStart &&
+      (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
+    
     Instruction instruction = {0};
     
     instruction.opcode = OP_PRINT_VALUE;
     instruction.valueType = result.type;
+    instruction.propagateNone = isBare;
     
     EmitInstruction(instruction);
     

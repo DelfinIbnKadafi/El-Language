@@ -34,7 +34,21 @@ print array_int[5+2];
 
 // string size
 var str[4] str_4;
-str_4 = "Hello";
+str_4 = "Hello"; // should be 'Hell'
 print str_4;
+
+// initial array value
+var int budi[19] = 10;
+print budi[5];
+
+var int joni[3] = {1, 2, 3};
+print joni[2];
+
+// none value
+var bool none_bool;
+print none_bool;
+
+if(none_bool == NONE) =
+ print "none_bool = NONE";
 
 exit;

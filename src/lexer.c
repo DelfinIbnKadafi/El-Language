@@ -162,6 +162,13 @@ Token LexerNext() {
     token.type = TOKEN_KW_AND;
     return token;
   }
+  // Read NONE keyword
+  if(strncmp(&source[position], "NONE", 4) == 0 && !IsWordChar(source[position + 4])) {
+    position += 4;
+    
+    token.type = TOKEN_KW_NONE;
+    return token;
+  }
   
   
   // data type
@@ -409,6 +416,27 @@ Token LexerNext() {
     position++;
     
     token.type = TOKEN_RBRACKET;
+    return token;
+  }
+  // Read left brace
+  if(source[position] == '{') {
+    position++;
+    
+    token.type = TOKEN_LBRACE;
+    return token;
+  }
+  // Read right brace
+  if(source[position] == '}') {
+    position++;
+    
+    token.type = TOKEN_RBRACE;
+    return token;
+  }
+  // Read comma
+  if(source[position] == ',') {
+    position++;
+    
+    token.type = TOKEN_COMMA;
     return token;
   }
   

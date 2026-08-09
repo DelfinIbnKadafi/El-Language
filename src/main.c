@@ -8,6 +8,8 @@
                       added unary minus/plus, clearer error messages
   El Language 0.2.0 - arrays (var type name[size];), sized strings (str[size]),
                       parsing logic moved to its own parser.c / parser.h
+  El Language 0.2.1 - array initializers (broadcast and { list } forms), and
+                      the NONE value for int, float, str, and bool variables
 */
 
 #include <stdio.h>

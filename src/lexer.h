@@ -11,6 +11,7 @@ typedef enum {
   TOKEN_KW_ELSE,
   TOKEN_KW_OR,
   TOKEN_KW_AND,
+  TOKEN_KW_NONE,
   
   
   // data type
@@ -51,6 +52,9 @@ typedef enum {
   TOKEN_RPAREN,
   TOKEN_LBRACKET,
   TOKEN_RBRACKET,
+  TOKEN_LBRACE,
+  TOKEN_RBRACE,
+  TOKEN_COMMA,
   
   
   TOKEN_IDENTIFIER,

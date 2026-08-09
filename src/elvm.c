@@ -15,6 +15,10 @@ int stackTop = 0;
 // Current running file, used for runtime error messages
 char* currentFilename;
 
+// NONE status of the value most recently pushed by OP_PUSH_VAR / OP_PUSH_ARR,
+// used to implement "== NONE" checks and bare "x = y;" NONE propagation
+int lastPushedIsNone;
+
 // Push value onto evaluation stack
 void Push(double value) {
   stack[stackTop++] = value;
@@ -40,15 +44,15 @@ int CheckBounds(double rawIndex, int size, int line) {
 
 // Resolve the string to copy for OP_DECLARE_STR / OP_STORE_STR into 'out': either
 // a literal, a whole scalar variable, or one element of an array variable (index
-// popped from the stack when srcIsArray is set).
-void ResolveStoreSource(Instruction instruction, char* out, int outSize) {
+// popped from the stack when srcIsArray is set). Writes the resolved source index
+// (0 for a literal or scalar source) into 'outSrcIdx' for the caller to reuse.
+void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* outSrcIdx) {
   char* text;
+  int srcIdx = 0;
   
   if(instruction.srcVarIndex == -1) {
     text = instruction.stringLiteral;
   } else {
-    int srcIdx = 0;
-    
     if(instruction.srcIsArray) {
       srcIdx = CheckBounds(Pop(), variables[instruction.srcVarIndex].arraySize, instruction.line);
     }
@@ -58,6 +62,8 @@ void ResolveStoreSource(Instruction instruction, char* out, int outSize) {
   
   strncpy(out, text, outSize);
   out[outSize] = '\0';
+  
+  *outSrcIdx = srcIdx;
 }
 
 void VMRun(Instruction* code, int count, char* filename) {
@@ -75,7 +81,9 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_PRINT_VALUE: {
         double value = Pop();
         
-        if(instruction.valueType == VAR_FLOAT) {
+        if(instruction.propagateNone && lastPushedIsNone) {
+          printf("NONE\n");
+        } else if(instruction.valueType == VAR_FLOAT) {
           printf("%g\n", value);
         } else if(instruction.valueType == VAR_BOOL) {
           printf("%s\n", value != 0 ? "true" : "false");
@@ -91,7 +99,11 @@ void VMRun(Instruction* code, int count, char* filename) {
           idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
         }
         
-        printf("%s\n", variables[instruction.varIndex].strings[idx]);
+        if(variables[instruction.varIndex].isNone[idx]) {
+          printf("NONE\n");
+        } else {
+          printf("%s\n", variables[instruction.varIndex].strings[idx]);
+        }
         break;
       }
       case OP_DECLARE_INT:
@@ -111,11 +123,20 @@ void VMRun(Instruction* code, int count, char* filename) {
         variables[instruction.varIndex].isArray = instruction.isArray;
         variables[instruction.varIndex].arraySize = instruction.isArray ? instruction.arraySize : 1;
         
-        if(!instruction.isArray) {
+        if(instruction.isArray) {
+          // Every element starts as NONE; a broadcast/list initializer, if any,
+          // is applied afterward through separate OP_STORE_ARR instructions
+          for(int i = 0; i < instruction.arraySize; i++) {
+            variables[instruction.varIndex].isNone[i] = 1;
+          }
+        } else if(instruction.storeNone) {
+          variables[instruction.varIndex].numbers[0] = 0;
+          variables[instruction.varIndex].isNone[0] = 1;
+        } else {
           // Scalar: pop its single initializer value
           variables[instruction.varIndex].numbers[0] = Pop();
+          variables[instruction.varIndex].isNone[0] = instruction.propagateNone ? lastPushedIsNone : 0;
         }
-        // Arrays start zero-initialized (static storage default), no initializer supported
         
         variableCount++;
         break;
@@ -129,20 +150,39 @@ void VMRun(Instruction* code, int count, char* filename) {
         variables[instruction.varIndex].strSize =
           instruction.strSize > 0 ? instruction.strSize : (MAX_STR_LEN - 1);
         
-        if(!instruction.isArray) {
+        if(instruction.isArray) {
+          // Every element starts as NONE; a broadcast/list initializer, if any,
+          // is applied afterward through separate OP_STORE_STR instructions
+          for(int i = 0; i < instruction.arraySize; i++) {
+            variables[instruction.varIndex].strings[i][0] = '\0';
+            variables[instruction.varIndex].isNone[i] = 1;
+          }
+        } else if(instruction.storeNone) {
+          variables[instruction.varIndex].strings[0][0] = '\0';
+          variables[instruction.varIndex].isNone[0] = 1;
+        } else {
           // Scalar: copy its single initializer string
           int maxLen = variables[instruction.varIndex].strSize;
+          int srcIdx = 0;
           
-          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[0], maxLen);
+          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[0], maxLen, &srcIdx);
+          
+          variables[instruction.varIndex].isNone[0] =
+            (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
         }
-        // Arrays start as empty strings (zero-initialized), no initializer supported
         
         variableCount++;
         break;
       }
       case OP_STORE_VAR:
         // Overwrite an existing scalar int, float, or bool variable
-        variables[instruction.varIndex].numbers[0] = Pop();
+        if(instruction.storeNone) {
+          variables[instruction.varIndex].numbers[0] = 0;
+          variables[instruction.varIndex].isNone[0] = 1;
+        } else {
+          variables[instruction.varIndex].numbers[0] = Pop();
+          variables[instruction.varIndex].isNone[0] = instruction.propagateNone ? lastPushedIsNone : 0;
+        }
         break;
       case OP_STORE_STR: {
         int destIdx = 0;
@@ -151,9 +191,18 @@ void VMRun(Instruction* code, int count, char* filename) {
           destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
         }
         
-        int maxLen = variables[instruction.varIndex].strSize;
-        
-        ResolveStoreSource(instruction, variables[instruction.varIndex].strings[destIdx], maxLen);
+        if(instruction.storeNone) {
+          variables[instruction.varIndex].strings[destIdx][0] = '\0';
+          variables[instruction.varIndex].isNone[destIdx] = 1;
+        } else {
+          int maxLen = variables[instruction.varIndex].strSize;
+          int srcIdx = 0;
+          
+          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[destIdx], maxLen, &srcIdx);
+          
+          variables[instruction.varIndex].isNone[destIdx] =
+            (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
+        }
         break;
       }
       case OP_PUSH_NUMBER:
@@ -161,18 +210,28 @@ void VMRun(Instruction* code, int count, char* filename) {
         break;
       case OP_PUSH_VAR:
         Push(variables[instruction.varIndex].numbers[0]);
+        lastPushedIsNone = variables[instruction.varIndex].isNone[0];
         break;
       case OP_PUSH_ARR: {
         int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
         
         Push(variables[instruction.varIndex].numbers[idx]);
+        lastPushedIsNone = variables[instruction.varIndex].isNone[idx];
         break;
       }
       case OP_STORE_ARR: {
-        double value = Pop();
-        int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
-        
-        variables[instruction.varIndex].numbers[idx] = value;
+        if(instruction.storeNone) {
+          int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          
+          variables[instruction.varIndex].numbers[idx] = 0;
+          variables[instruction.varIndex].isNone[idx] = 1;
+        } else {
+          double value = Pop();
+          int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          
+          variables[instruction.varIndex].numbers[idx] = value;
+          variables[instruction.varIndex].isNone[idx] = instruction.propagateNone ? lastPushedIsNone : 0;
+        }
         break;
       }
       case OP_ADD: {
@@ -285,6 +344,32 @@ void VMRun(Instruction* code, int count, char* filename) {
         if(condition == 0) {
           ip = instruction.jumpTarget;
         }
+        break;
+      }
+      case OP_POP:
+        Pop();
+        break;
+      case OP_PUSH_LAST_NONE_FLAG: {
+        int result = lastPushedIsNone;
+        
+        if(instruction.numberValue != 0) {
+          result = !result;
+        }
+        
+        Push(result ? 1 : 0);
+        break;
+      }
+      case OP_STR_IS_NONE:
+      case OP_STR_IS_NOT_NONE: {
+        int idx = 0;
+        
+        if(instruction.destIsArray) {
+          idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+        }
+        
+        int isNone = variables[instruction.varIndex].isNone[idx];
+        
+        Push((instruction.opcode == OP_STR_IS_NONE ? isNone : !isNone) ? 1 : 0);
         break;
       }
       case OP_HALT:

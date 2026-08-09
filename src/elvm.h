@@ -45,7 +45,11 @@ typedef enum {
   OP_AND,
   OP_OR,
   OP_JUMP,
-  OP_JUMP_IF_FALSE
+  OP_JUMP_IF_FALSE,
+  OP_POP,
+  OP_PUSH_LAST_NONE_FLAG,
+  OP_STR_IS_NONE,
+  OP_STR_IS_NOT_NONE
 } Opcode;
 
 // Supported variable types
@@ -76,6 +80,10 @@ typedef struct {
   
   // Holds string values, only used when type is VAR_STR
   char strings[MAX_ARRAY_SIZE][MAX_STR_LEN];
+  
+  // 1 if this element (or index 0 for a scalar) has never been given a real
+  // value, or was explicitly set to NONE. Not used for VAR_BOOL.
+  int isNone[MAX_ARRAY_SIZE];
 } Variable;
 
 // Single bytecode instruction
@@ -122,6 +130,15 @@ typedef struct {
   // Source (srcVarIndex) is accessed by index popped from the stack,
   // used by OP_DECLARE_STR and OP_STORE_STR
   int srcIsArray;
+  
+  // Set the destination to NONE instead of storing a value, used by
+  // OP_DECLARE_INT/FLOAT/STR and OP_STORE_VAR/STORE_ARR/STORE_STR
+  int storeNone;
+  
+  // After a normal store, also copy the NONE status of the variable that was
+  // just read by the immediately preceding OP_PUSH_VAR/OP_PUSH_ARR, used by
+  // OP_STORE_VAR/STORE_ARR for bare "x = y;" style assignments
+  int propagateNone;
 } Instruction;
 
 // Execute bytecode

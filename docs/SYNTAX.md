@@ -295,3 +295,64 @@ The stored value becomes:
 "Hello"
 
 Extra characters are removed automatically, and the program continues execution without crashing.
+
+## Initial Value Array
+
+If you wanna create a variable with array index, you also put default/initial value in that variable.
+
+Example :
+
+```el
+var int test[3] = 10;
+```
+
+The value of all index test variable is 10.
+
+But, if you want put diferent value in array varieble, use {}.
+
+Example :
+
+```el
+var int test[3] = {1, 2, 3};
+```
+
+## NONE Value
+
+If you create a variable, but you doesn't put default value, the variable value is NONE. And if you print with variable with a NONE value, the output is "NONE".
+
+Example :
+
+```el
+var int jj;
+// the value of jj is NONE
+
+print jj;
+
+// the output is 'NONE'
+```
+
+#### Mathemathic NONE Value
+
+If the type of var is int or float, if you put both in a mathematic program, both has a 0 value.
+
+For Example :
+
+```el
+var float bb;
+
+jj = bb + 1;
+
+// bb automatlicy change to 0, so 0 + 1
+```
+
+The value NONE can have by all of data type.
+
+#### If Operator With NONE Value
+
+Yo also create if/elseif statement with NONE condition.
+
+Example :
+
+```el
+if(jj == NONE) =
+```
