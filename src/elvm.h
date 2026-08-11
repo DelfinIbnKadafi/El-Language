@@ -6,9 +6,6 @@
 // Max number of variables the VM can hold
 #define MAX_VARIABLES 256
 
-// Max number of elements in an array
-#define MAX_ARRAY_SIZE 64
-
 // Max length of instruction string data
 #define INSTRUCTION_MAX_LEN 256
 
@@ -31,6 +28,8 @@ typedef enum {
   OP_PUSH_VAR,
   OP_PUSH_ARR,
   OP_STORE_ARR,
+  OP_BROADCAST_ARR,
+  OP_BROADCAST_STR_ARR,
   OP_ADD,
   OP_SUB,
   OP_MUL,
@@ -61,7 +60,8 @@ typedef enum {
 } VarType;
 
 // Single variable entry. A scalar is simply an array with arraySize == 1,
-// always stored / accessed at index 0.
+// always stored / accessed at index 0. Storage is allocated at declare time,
+// sized exactly to arraySize, so array size is only limited by available memory.
 typedef struct {
   char name[TOKEN_MAX_LEN];
   
@@ -75,15 +75,17 @@ typedef struct {
   // Max characters allowed per string element, only used when type is VAR_STR
   int strSize;
   
-  // Holds int, float, or bool values (bool as 0/1)
-  double numbers[MAX_ARRAY_SIZE];
+  // Holds int, float, or bool values (bool as 0/1). Allocated to arraySize elements.
+  double* numbers;
   
-  // Holds string values, only used when type is VAR_STR
-  char strings[MAX_ARRAY_SIZE][MAX_STR_LEN];
+  // Holds string values, only used when type is VAR_STR. Allocated to arraySize
+  // pointers, each pointing to a buffer of strSize + 1 characters.
+  char** strings;
   
   // 1 if this element (or index 0 for a scalar) has never been given a real
-  // value, or was explicitly set to NONE. Not used for VAR_BOOL.
-  int isNone[MAX_ARRAY_SIZE];
+  // value, or was explicitly set to NONE. Not used for VAR_BOOL. Allocated to
+  // arraySize elements.
+  int* isNone;
 } Variable;
 
 // Single bytecode instruction

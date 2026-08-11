@@ -51,4 +51,10 @@ print none_bool;
 if(none_bool == NONE) =
  print "none_bool = NONE";
 
+// Big array size
+var int jojo[9999];
+
+// copy array to array
+jojo[1] = budi[1];
+
 exit;

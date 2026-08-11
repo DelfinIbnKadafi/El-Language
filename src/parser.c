@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <errno.h>
+#include <limits.h>
 #include "lexer.h"
 #include "elvm.h"
 #include "parser.h"
@@ -858,6 +860,26 @@ Token EmitArrayElementStore(VarType varType, int varIndex, int elementIndex, Tok
   return EmitElementStore(varType, varIndex, valueToken);
 }
 
+// Parse a number token as a positive size (for array size or string size),
+// safely detecting overflow instead of relying on atoi's undefined behavior
+// on out-of-range input. Stops the program with a clear error on failure.
+int ParsePositiveSize(Token sizeToken, char* what) {
+  errno = 0;
+  
+  char* end;
+  long value = strtol(sizeToken.value, &end, 10);
+  
+  if(errno == ERANGE || value > INT_MAX) {
+    CompileError(sizeToken.line, "%s is too large", what);
+  }
+  
+  if(value <= 0) {
+    CompileError(sizeToken.line, "%s must be positive", what);
+  }
+  
+  return (int) value;
+}
+
 Token ParseVarDeclaration() {
   Token type = LexerNext();
   
@@ -887,10 +909,10 @@ Token ParseVarDeclaration() {
       CompileError(sizeToken.line, "Expected string size");
     }
     
-    strSize = atoi(sizeToken.value);
+    strSize = ParsePositiveSize(sizeToken, "String size");
     
-    if(strSize <= 0 || strSize >= MAX_STR_LEN) {
-      CompileError(sizeToken.line, "String size must be between 1 and %d", MAX_STR_LEN - 1);
+    if(strSize >= MAX_STR_LEN) {
+      CompileError(sizeToken.line, "String size must be less than %d", MAX_STR_LEN);
     }
     
     Token closeBracket = LexerNext();
@@ -923,11 +945,7 @@ Token ParseVarDeclaration() {
       CompileError(sizeToken.line, "Expected array size");
     }
     
-    arraySize = atoi(sizeToken.value);
-    
-    if(arraySize <= 0 || arraySize > MAX_ARRAY_SIZE) {
-      CompileError(sizeToken.line, "Array size must be between 1 and %d", MAX_ARRAY_SIZE);
-    }
+    arraySize = ParsePositiveSize(sizeToken, "Array size");
     
     Token closeBracket = LexerNext();
     
@@ -1007,31 +1025,68 @@ Token ParseVarDeclaration() {
     }
     
     // Broadcast form: a single value applied to every element. The value is
-    // parsed once (for element 0), and its bytecode is re-emitted with a fresh
-    // index for each remaining element, since this language has no side
-    // effects in expressions.
-    Instruction pushFirstIdx = {0};
+    // evaluated once and the VM fills every element with it, so bytecode size
+    // stays constant no matter how large the array is.
+    Token afterValue;
     
-    pushFirstIdx.opcode = OP_PUSH_NUMBER;
-    pushFirstIdx.numberValue = 0;
-    
-    EmitInstruction(pushFirstIdx);
-    
-    int valueStart = bytecodeCount;
-    
-    Token afterValue = EmitElementStore(varType, index, afterAssign);
-    
-    int valueEnd = bytecodeCount;
-    
-    for(int i = 1; i < arraySize; i++) {
-      Instruction pushIdx = {0};
+    if(varType == VAR_STR) {
+      StringResult value = ParseStringValue(afterAssign);
       
-      pushIdx.opcode = OP_PUSH_NUMBER;
-      pushIdx.numberValue = i;
+      Instruction broadcast = {0};
       
-      EmitInstruction(pushIdx);
+      broadcast.opcode = OP_BROADCAST_STR_ARR;
+      broadcast.varIndex = index;
+      broadcast.storeNone = value.isNoneLiteral;
+      broadcast.srcVarIndex = value.srcVarIndex;
+      broadcast.srcIsArray = value.srcIsArray;
+      broadcast.line = afterAssign.line;
       
-      DuplicateInstructions(valueStart, valueEnd);
+      strncpy(broadcast.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
+      broadcast.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+      
+      EmitInstruction(broadcast);
+      
+      afterValue = value.next;
+    } else if(varType == VAR_BOOL) {
+      BoolResult value = ParseBoolValue(afterAssign);
+      
+      Instruction broadcast = {0};
+      
+      broadcast.opcode = OP_BROADCAST_ARR;
+      broadcast.varIndex = index;
+      broadcast.storeNone = value.isNoneLiteral;
+      broadcast.line = afterAssign.line;
+      
+      EmitInstruction(broadcast);
+      
+      afterValue = value.next;
+    } else if(afterAssign.type == TOKEN_KW_NONE) {
+      Instruction broadcast = {0};
+      
+      broadcast.opcode = OP_BROADCAST_ARR;
+      broadcast.varIndex = index;
+      broadcast.storeNone = 1;
+      broadcast.line = afterAssign.line;
+      
+      EmitInstruction(broadcast);
+      
+      afterValue = LexerNext();
+    } else {
+      ExprResult result = ParseNumericExpression(afterAssign);
+      
+      if(varType == VAR_INT && result.type == VAR_FLOAT) {
+        CompileError(afterAssign.line, "Cannot assign float value to int array");
+      }
+      
+      Instruction broadcast = {0};
+      
+      broadcast.opcode = OP_BROADCAST_ARR;
+      broadcast.varIndex = index;
+      broadcast.line = afterAssign.line;
+      
+      EmitInstruction(broadcast);
+      
+      afterValue = result.next;
     }
     
     if(afterValue.type != TOKEN_SEMICOLON) {
@@ -1275,10 +1330,6 @@ Token ParseIdentifierStatement(Token token) {
   
   if(varType == VAR_STR) {
     StringResult value = ParseStringValue(LexerNext());
-    
-    if(value.srcIsArray && isIndexed) {
-      CompileError(token.line, "Copying between two array elements is not supported");
-    }
     
     if(value.next.type != TOKEN_SEMICOLON) {
       CompileError(value.next.line, "Expected ;");

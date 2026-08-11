@@ -10,6 +10,9 @@
                       parsing logic moved to its own parser.c / parser.h
   El Language 0.2.1 - array initializers (broadcast and { list } forms), and
                       the NONE value for int, float, str, and bool variables
+  El Language 0.2.2 - array size limited only by available memory (was capped
+                      at 64), array-to-array string copy, faster broadcast
+                      initializers for large arrays
 */
 
 #include <stdio.h>

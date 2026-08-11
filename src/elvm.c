@@ -42,10 +42,46 @@ int CheckBounds(double rawIndex, int size, int line) {
   return index;
 }
 
+// Allocate the number/isNone storage for a variable holding 'size' elements,
+// stopping the program with a clear error if memory could not be obtained.
+void AllocateNumberStorage(int varIndex, int size, int line) {
+  variables[varIndex].numbers = calloc(size, sizeof(double));
+  variables[varIndex].isNone = malloc(size * sizeof(int));
+  
+  if(variables[varIndex].numbers == NULL || variables[varIndex].isNone == NULL) {
+    printf("%s (%d) : Failed to allocate array of size %d\n", currentFilename, line, size);
+    exit(1);
+  }
+}
+
+// Allocate the string storage for a variable holding 'size' elements, each up
+// to 'strSize' characters, stopping the program with a clear error if memory
+// could not be obtained.
+void AllocateStringStorage(int varIndex, int size, int strSize, int line) {
+  variables[varIndex].strings = malloc(size * sizeof(char*));
+  variables[varIndex].isNone = malloc(size * sizeof(int));
+  
+  if(variables[varIndex].strings == NULL || variables[varIndex].isNone == NULL) {
+    printf("%s (%d) : Failed to allocate array of size %d\n", currentFilename, line, size);
+    exit(1);
+  }
+  
+  for(int i = 0; i < size; i++) {
+    variables[varIndex].strings[i] = calloc(strSize + 1, sizeof(char));
+    
+    if(variables[varIndex].strings[i] == NULL) {
+      printf("%s (%d) : Failed to allocate string storage\n", currentFilename, line);
+      exit(1);
+    }
+  }
+}
+
 // Resolve the string to copy for OP_DECLARE_STR / OP_STORE_STR into 'out': either
 // a literal, a whole scalar variable, or one element of an array variable (index
 // popped from the stack when srcIsArray is set). Writes the resolved source index
 // (0 for a literal or scalar source) into 'outSrcIdx' for the caller to reuse.
+// Must be called before popping any destination index, since the source index
+// (if any) was pushed after it and therefore sits on top of the stack.
 void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* outSrcIdx) {
   char* text;
   int srcIdx = 0;
@@ -108,7 +144,7 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_DECLARE_INT:
       case OP_DECLARE_FLOAT:
-      case OP_DECLARE_BOOL:
+      case OP_DECLARE_BOOL: {
         strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
         variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
         
@@ -120,17 +156,20 @@ void VMRun(Instruction* code, int count, char* filename) {
           variables[instruction.varIndex].type = VAR_BOOL;
         }
         
+        int size = instruction.isArray ? instruction.arraySize : 1;
+        
         variables[instruction.varIndex].isArray = instruction.isArray;
-        variables[instruction.varIndex].arraySize = instruction.isArray ? instruction.arraySize : 1;
+        variables[instruction.varIndex].arraySize = size;
+        
+        AllocateNumberStorage(instruction.varIndex, size, instruction.line);
         
         if(instruction.isArray) {
           // Every element starts as NONE; a broadcast/list initializer, if any,
-          // is applied afterward through separate OP_STORE_ARR instructions
-          for(int i = 0; i < instruction.arraySize; i++) {
+          // is applied afterward through separate instructions
+          for(int i = 0; i < size; i++) {
             variables[instruction.varIndex].isNone[i] = 1;
           }
         } else if(instruction.storeNone) {
-          variables[instruction.varIndex].numbers[0] = 0;
           variables[instruction.varIndex].isNone[0] = 1;
         } else {
           // Scalar: pop its single initializer value
@@ -140,32 +179,35 @@ void VMRun(Instruction* code, int count, char* filename) {
         
         variableCount++;
         break;
+      }
       case OP_DECLARE_STR: {
         strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
         variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
         
         variables[instruction.varIndex].type = VAR_STR;
+        
+        int size = instruction.isArray ? instruction.arraySize : 1;
+        int strSize = instruction.strSize > 0 ? instruction.strSize : (MAX_STR_LEN - 1);
+        
         variables[instruction.varIndex].isArray = instruction.isArray;
-        variables[instruction.varIndex].arraySize = instruction.isArray ? instruction.arraySize : 1;
-        variables[instruction.varIndex].strSize =
-          instruction.strSize > 0 ? instruction.strSize : (MAX_STR_LEN - 1);
+        variables[instruction.varIndex].arraySize = size;
+        variables[instruction.varIndex].strSize = strSize;
+        
+        AllocateStringStorage(instruction.varIndex, size, strSize, instruction.line);
         
         if(instruction.isArray) {
           // Every element starts as NONE; a broadcast/list initializer, if any,
-          // is applied afterward through separate OP_STORE_STR instructions
-          for(int i = 0; i < instruction.arraySize; i++) {
-            variables[instruction.varIndex].strings[i][0] = '\0';
+          // is applied afterward through separate instructions
+          for(int i = 0; i < size; i++) {
             variables[instruction.varIndex].isNone[i] = 1;
           }
         } else if(instruction.storeNone) {
-          variables[instruction.varIndex].strings[0][0] = '\0';
           variables[instruction.varIndex].isNone[0] = 1;
         } else {
           // Scalar: copy its single initializer string
-          int maxLen = variables[instruction.varIndex].strSize;
           int srcIdx = 0;
           
-          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[0], maxLen, &srcIdx);
+          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[0], strSize, &srcIdx);
           
           variables[instruction.varIndex].isNone[0] =
             (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
@@ -177,7 +219,6 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_STORE_VAR:
         // Overwrite an existing scalar int, float, or bool variable
         if(instruction.storeNone) {
-          variables[instruction.varIndex].numbers[0] = 0;
           variables[instruction.varIndex].isNone[0] = 1;
         } else {
           variables[instruction.varIndex].numbers[0] = Pop();
@@ -185,20 +226,34 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         break;
       case OP_STORE_STR: {
-        int destIdx = 0;
-        
-        if(instruction.destIsArray) {
-          destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
-        }
-        
         if(instruction.storeNone) {
+          int destIdx = 0;
+          
+          if(instruction.destIsArray) {
+            destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          }
+          
           variables[instruction.varIndex].strings[destIdx][0] = '\0';
           variables[instruction.varIndex].isNone[destIdx] = 1;
         } else {
-          int maxLen = variables[instruction.varIndex].strSize;
+          // Resolve the source (and pop its index, if it's an array element)
+          // BEFORE popping the destination index: the source index, if any,
+          // was pushed after the destination index and sits on top of it.
+          char buffer[MAX_STR_LEN];
           int srcIdx = 0;
           
-          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[destIdx], maxLen, &srcIdx);
+          ResolveStoreSource(instruction, buffer, variables[instruction.varIndex].strSize, &srcIdx);
+          
+          int destIdx = 0;
+          
+          if(instruction.destIsArray) {
+            destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          }
+          
+          int maxLen = variables[instruction.varIndex].strSize;
+          
+          strncpy(variables[instruction.varIndex].strings[destIdx], buffer, maxLen);
+          variables[instruction.varIndex].strings[destIdx][maxLen] = '\0';
           
           variables[instruction.varIndex].isNone[destIdx] =
             (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
@@ -223,7 +278,6 @@ void VMRun(Instruction* code, int count, char* filename) {
         if(instruction.storeNone) {
           int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
           
-          variables[instruction.varIndex].numbers[idx] = 0;
           variables[instruction.varIndex].isNone[idx] = 1;
         } else {
           double value = Pop();
@@ -231,6 +285,51 @@ void VMRun(Instruction* code, int count, char* filename) {
           
           variables[instruction.varIndex].numbers[idx] = value;
           variables[instruction.varIndex].isNone[idx] = instruction.propagateNone ? lastPushedIsNone : 0;
+        }
+        break;
+      }
+      case OP_BROADCAST_ARR: {
+        // Fill every element of the array with the same value, evaluated once.
+        // Keeps bytecode size constant regardless of array size.
+        double value = 0;
+        int noneFlag = 1;
+        
+        if(!instruction.storeNone) {
+          value = Pop();
+          noneFlag = instruction.propagateNone ? lastPushedIsNone : 0;
+        }
+        
+        int size = variables[instruction.varIndex].arraySize;
+        
+        for(int i = 0; i < size; i++) {
+          variables[instruction.varIndex].numbers[i] = value;
+          variables[instruction.varIndex].isNone[i] = noneFlag;
+        }
+        break;
+      }
+      case OP_BROADCAST_STR_ARR: {
+        // Fill every element of a string array with the same text, resolved once.
+        char buffer[MAX_STR_LEN];
+        int noneFlag;
+        
+        if(instruction.storeNone) {
+          buffer[0] = '\0';
+          noneFlag = 1;
+        } else {
+          int srcIdx = 0;
+          
+          ResolveStoreSource(instruction, buffer, variables[instruction.varIndex].strSize, &srcIdx);
+          
+          noneFlag = (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
+        }
+        
+        int size = variables[instruction.varIndex].arraySize;
+        int maxLen = variables[instruction.varIndex].strSize;
+        
+        for(int i = 0; i < size; i++) {
+          strncpy(variables[instruction.varIndex].strings[i], buffer, maxLen);
+          variables[instruction.varIndex].strings[i][maxLen] = '\0';
+          variables[instruction.varIndex].isNone[i] = noneFlag;
         }
         break;
       }
