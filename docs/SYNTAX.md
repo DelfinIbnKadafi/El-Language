@@ -63,6 +63,8 @@ age = 10;
 did_you_love_me = false;
 age++;
 age--;
+age += 10;
+age -= 10;
 ```
 
 ## Math
@@ -266,6 +268,7 @@ ELVM will report a clear error instead of executing the statement.
 Sized String
 
 EL supports fixed-size strings using the str[size] syntax.
+Default max string size (If you doesn't custom) is 255. You can custom string size unlimited.
 
 Declaration
 

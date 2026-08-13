@@ -36,6 +36,8 @@ typedef enum {
   TOKEN_OP_DIV,
   TOKEN_OP_INC,
   TOKEN_OP_DEC,
+  TOKEN_OP_PLUS_ASSIGN,
+  TOKEN_OP_MINUS_ASSIGN,
   
   
   // comparison operator

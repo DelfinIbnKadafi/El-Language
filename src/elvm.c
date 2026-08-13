@@ -44,7 +44,27 @@ int CheckBounds(double rawIndex, int size, int line) {
 
 // Allocate the number/isNone storage for a variable holding 'size' elements,
 // stopping the program with a clear error if memory could not be obtained.
+// Above this, Linux's memory overcommit can let malloc "succeed" and then
+// have the OS kill the process later once the memory is actually touched,
+// which looks like a crash rather than a clean error. Refuse before that
+// point instead, with a clear message.
+#define MAX_SAFE_ALLOCATION_BYTES 1073741824L
+
+// Check that a requested allocation of 'count' elements of 'elementSize' bytes
+// each stays within a sane total, stopping the program with a clear error if not.
+void CheckAllocationSize(long count, long elementSize, int line) {
+  double totalBytes = (double) count * (double) elementSize;
+  
+  if(totalBytes > MAX_SAFE_ALLOCATION_BYTES) {
+    printf("%s (%d) : Requested storage (%.0f MB) exceeds the safety limit of %ld MB\n",
+      currentFilename, line, totalBytes / (1024 * 1024), MAX_SAFE_ALLOCATION_BYTES / (1024 * 1024));
+    exit(1);
+  }
+}
+
 void AllocateNumberStorage(int varIndex, int size, int line) {
+  CheckAllocationSize(size, sizeof(double) + sizeof(int), line);
+  
   variables[varIndex].numbers = calloc(size, sizeof(double));
   variables[varIndex].isNone = malloc(size * sizeof(int));
   
@@ -58,6 +78,8 @@ void AllocateNumberStorage(int varIndex, int size, int line) {
 // to 'strSize' characters, stopping the program with a clear error if memory
 // could not be obtained.
 void AllocateStringStorage(int varIndex, int size, int strSize, int line) {
+  CheckAllocationSize(size, strSize + 1 + sizeof(char*) + sizeof(int), line);
+  
   variables[varIndex].strings = malloc(size * sizeof(char*));
   variables[varIndex].isNone = malloc(size * sizeof(int));
   
@@ -239,10 +261,19 @@ void VMRun(Instruction* code, int count, char* filename) {
           // Resolve the source (and pop its index, if it's an array element)
           // BEFORE popping the destination index: the source index, if any,
           // was pushed after the destination index and sits on top of it.
-          char buffer[MAX_STR_LEN];
+          // The intermediate buffer is sized to the destination's own strSize,
+          // since text is truncated to fit the destination anyway.
+          int maxLen = variables[instruction.varIndex].strSize;
+          char* buffer = malloc(maxLen + 1);
+          
+          if(buffer == NULL) {
+            printf("%s (%d) : Failed to allocate string buffer\n", currentFilename, instruction.line);
+            exit(1);
+          }
+          
           int srcIdx = 0;
           
-          ResolveStoreSource(instruction, buffer, variables[instruction.varIndex].strSize, &srcIdx);
+          ResolveStoreSource(instruction, buffer, maxLen, &srcIdx);
           
           int destIdx = 0;
           
@@ -250,13 +281,13 @@ void VMRun(Instruction* code, int count, char* filename) {
             destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
           }
           
-          int maxLen = variables[instruction.varIndex].strSize;
-          
           strncpy(variables[instruction.varIndex].strings[destIdx], buffer, maxLen);
           variables[instruction.varIndex].strings[destIdx][maxLen] = '\0';
           
           variables[instruction.varIndex].isNone[destIdx] =
             (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
+          
+          free(buffer);
         }
         break;
       }
@@ -309,8 +340,14 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_BROADCAST_STR_ARR: {
         // Fill every element of a string array with the same text, resolved once.
-        char buffer[MAX_STR_LEN];
+        int maxLen = variables[instruction.varIndex].strSize;
+        char* buffer = malloc(maxLen + 1);
         int noneFlag;
+        
+        if(buffer == NULL) {
+          printf("%s (%d) : Failed to allocate string buffer\n", currentFilename, instruction.line);
+          exit(1);
+        }
         
         if(instruction.storeNone) {
           buffer[0] = '\0';
@@ -318,19 +355,20 @@ void VMRun(Instruction* code, int count, char* filename) {
         } else {
           int srcIdx = 0;
           
-          ResolveStoreSource(instruction, buffer, variables[instruction.varIndex].strSize, &srcIdx);
+          ResolveStoreSource(instruction, buffer, maxLen, &srcIdx);
           
           noneFlag = (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
         }
         
         int size = variables[instruction.varIndex].arraySize;
-        int maxLen = variables[instruction.varIndex].strSize;
         
         for(int i = 0; i < size; i++) {
           strncpy(variables[instruction.varIndex].strings[i], buffer, maxLen);
           variables[instruction.varIndex].strings[i][maxLen] = '\0';
           variables[instruction.varIndex].isNone[i] = noneFlag;
         }
+        
+        free(buffer);
         break;
       }
       case OP_ADD: {

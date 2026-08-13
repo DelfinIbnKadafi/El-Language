@@ -13,6 +13,8 @@
   El Language 0.2.2 - array size limited only by available memory (was capped
                       at 64), array-to-array string copy, faster broadcast
                       initializers for large arrays
+  El Language 0.2.3 - str[size] no longer capped at 255; unset size still
+                      defaults to 255; += and -= compound assignment
 */
 
 #include <stdio.h>

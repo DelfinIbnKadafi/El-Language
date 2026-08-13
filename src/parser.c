@@ -911,10 +911,6 @@ Token ParseVarDeclaration() {
     
     strSize = ParsePositiveSize(sizeToken, "String size");
     
-    if(strSize >= MAX_STR_LEN) {
-      CompileError(sizeToken.line, "String size must be less than %d", MAX_STR_LEN);
-    }
-    
     Token closeBracket = LexerNext();
     
     if(closeBracket.type != TOKEN_RBRACKET) {
@@ -1307,6 +1303,57 @@ Token ParseIdentifierStatement(Token token) {
     Instruction op = {0};
     
     op.opcode = (next.type == TOKEN_OP_INC) ? OP_ADD : OP_SUB;
+    
+    EmitInstruction(op);
+    
+    Instruction store = {0};
+    
+    store.opcode = isIndexed ? OP_STORE_ARR : OP_STORE_VAR;
+    store.varIndex = index;
+    store.line = token.line;
+    
+    EmitInstruction(store);
+    
+    return LexerNext();
+  }
+  
+  // variabel += expr; or variabel -= expr;
+  if(next.type == TOKEN_OP_PLUS_ASSIGN || next.type == TOKEN_OP_MINUS_ASSIGN) {
+    VarType compoundType = symbols[index].type;
+    
+    if(compoundType != VAR_INT && compoundType != VAR_FLOAT) {
+      CompileError(token.line, "+= and -= are only supported for int and float variables");
+    }
+    
+    if(isIndexed) {
+      // Duplicate the index bytecode: one copy to read the current value, one
+      // still on the stack (from the earlier index parse above) to write back
+      DuplicateInstructions(idxStart, idxEnd);
+    }
+    
+    Instruction pushCurrent = {0};
+    
+    pushCurrent.opcode = isIndexed ? OP_PUSH_ARR : OP_PUSH_VAR;
+    pushCurrent.varIndex = index;
+    pushCurrent.line = token.line;
+    
+    EmitInstruction(pushCurrent);
+    
+    Token rhsToken = LexerNext();
+    ExprResult rhs = ParseNumericExpression(rhsToken);
+    
+    if(compoundType == VAR_INT && rhs.type == VAR_FLOAT) {
+      CompileError(rhsToken.line, "Cannot use a float value with += or -= on int variable '%s'", token.value);
+    }
+    
+    if(rhs.next.type != TOKEN_SEMICOLON) {
+      CompileError(rhs.next.line, "Expected ;");
+    }
+    
+    Instruction op = {0};
+    
+    op.opcode = (next.type == TOKEN_OP_PLUS_ASSIGN) ? OP_ADD : OP_SUB;
+    op.line = next.line;
     
     EmitInstruction(op);
     

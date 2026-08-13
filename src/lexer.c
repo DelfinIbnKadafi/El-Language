@@ -345,7 +345,7 @@ Token LexerNext() {
     token.type = TOKEN_OP_LT;
     return token;
   }
-  // Read increment / add operator
+  // Read increment / add-assign / add operator
   if(source[position] == '+') {
     if(source[position + 1] == '+') {
       position += 2;
@@ -354,17 +354,31 @@ Token LexerNext() {
       return token;
     }
     
+    if(source[position + 1] == '=') {
+      position += 2;
+      
+      token.type = TOKEN_OP_PLUS_ASSIGN;
+      return token;
+    }
+    
     position++;
     
     token.type = TOKEN_OP_ADD;
     return token;
   }
-  // Read decrement / sub operator
+  // Read decrement / sub-assign / sub operator
   if(source[position] == '-') {
     if(source[position + 1] == '-') {
       position += 2;
       
       token.type = TOKEN_OP_DEC;
+      return token;
+    }
+    
+    if(source[position + 1] == '=') {
+      position += 2;
+      
+      token.type = TOKEN_OP_MINUS_ASSIGN;
       return token;
     }
     
