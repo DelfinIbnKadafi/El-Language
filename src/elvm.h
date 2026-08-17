@@ -43,6 +43,7 @@ typedef enum {
   OP_CMP_NE,
   OP_AND,
   OP_OR,
+  OP_NOT,
   OP_JUMP,
   OP_JUMP_IF_FALSE,
   OP_POP,

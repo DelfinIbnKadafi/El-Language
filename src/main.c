@@ -15,6 +15,7 @@
                       initializers for large arrays
   El Language 0.2.3 - str[size] no longer capped at 255; unset size still
                       defaults to 255; += and -= compound assignment
+  El Language 0.3.0 - for and while loops
 */
 
 #include <stdio.h>

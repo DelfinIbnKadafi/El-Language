@@ -65,6 +65,12 @@ void CheckAllocationSize(long count, long elementSize, int line) {
 void AllocateNumberStorage(int varIndex, int size, int line) {
   CheckAllocationSize(size, sizeof(double) + sizeof(int), line);
   
+  // Free any previous allocation for this variable slot, in case this declare
+  // instruction sits inside a loop body and is running again. free(NULL) is
+  // always safe, so this is harmless on the very first declaration too.
+  free(variables[varIndex].numbers);
+  free(variables[varIndex].isNone);
+  
   variables[varIndex].numbers = calloc(size, sizeof(double));
   variables[varIndex].isNone = malloc(size * sizeof(int));
   
@@ -79,6 +85,18 @@ void AllocateNumberStorage(int varIndex, int size, int line) {
 // could not be obtained.
 void AllocateStringStorage(int varIndex, int size, int strSize, int line) {
   CheckAllocationSize(size, strSize + 1 + sizeof(char*) + sizeof(int), line);
+  
+  // Free any previous allocation for this variable slot, in case this declare
+  // instruction sits inside a loop body and is running again.
+  if(variables[varIndex].strings != NULL) {
+    for(int i = 0; i < variables[varIndex].arraySize; i++) {
+      free(variables[varIndex].strings[i]);
+    }
+    
+    free(variables[varIndex].strings);
+  }
+  
+  free(variables[varIndex].isNone);
   
   variables[varIndex].strings = malloc(size * sizeof(char*));
   variables[varIndex].isNone = malloc(size * sizeof(int));
@@ -95,6 +113,31 @@ void AllocateStringStorage(int varIndex, int size, int strSize, int line) {
       printf("%s (%d) : Failed to allocate string storage\n", currentFilename, line);
       exit(1);
     }
+  }
+}
+
+// Free the dynamically allocated storage of every declared variable, called
+// once the program finishes running. Iterates over the fixed MAX_VARIABLES
+// bound (not variableCount, which can be inflated by a var declaration that
+// sits inside a loop body and therefore runs more than once) and skips any
+// slot that was never actually allocated.
+void FreeAllVariables() {
+  for(int i = 0; i < MAX_VARIABLES; i++) {
+    if(variables[i].numbers == NULL && variables[i].strings == NULL) {
+      continue;
+    }
+    
+    free(variables[i].numbers);
+    
+    if(variables[i].strings != NULL) {
+      for(int j = 0; j < variables[i].arraySize; j++) {
+        free(variables[i].strings[j]);
+      }
+      
+      free(variables[i].strings);
+    }
+    
+    free(variables[i].isNone);
   }
 }
 
@@ -472,6 +515,12 @@ void VMRun(Instruction* code, int count, char* filename) {
         Push((a != 0 || b != 0) ? 1 : 0);
         break;
       }
+      case OP_NOT: {
+        double a = Pop();
+        
+        Push(a == 0 ? 1 : 0);
+        break;
+      }
       case OP_JUMP:
         ip = instruction.jumpTarget;
         break;
@@ -510,7 +559,10 @@ void VMRun(Instruction* code, int count, char* filename) {
         break;
       }
       case OP_HALT:
+        FreeAllVariables();
         return;
     }
   }
+  
+  FreeAllVariables();
 }

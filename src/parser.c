@@ -138,6 +138,7 @@ typedef struct {
 ExprResult ParseNumericExpression(Token token);
 CondResult ParseOrExpr(Token token);
 Token ParseStatement(Token token);
+Token ParseIdentifierStatement(Token token, TokenType terminator);
 
 // Parse an optional array index following an identifier that resolves to symbol
 // 'symbolIndex'. 'nameToken' identifies the variable for error messages, and
@@ -635,12 +636,33 @@ CondResult ParseComparison(Token token) {
   return left;
 }
 
+// Parse 'not' prefixes (higher precedence than 'and', binds to one comparison).
+// Chains like 'not not x' are allowed by recursing on itself.
+CondResult ParseNotExpr(Token token) {
+  if(token.type == TOKEN_KW_NOT) {
+    CondResult inner = ParseNotExpr(LexerNext());
+    
+    Instruction instruction = {0};
+    
+    instruction.opcode = OP_NOT;
+    instruction.line = token.line;
+    
+    EmitInstruction(instruction);
+    
+    inner.type = VAR_BOOL;
+    
+    return inner;
+  }
+  
+  return ParseComparison(token);
+}
+
 // Parse 'and' chains (higher precedence than 'or')
 CondResult ParseAndExpr(Token token) {
-  CondResult left = ParseComparison(token);
+  CondResult left = ParseNotExpr(token);
   
   while(left.next.type == TOKEN_KW_AND) {
-    CondResult right = ParseComparison(LexerNext());
+    CondResult right = ParseNotExpr(LexerNext());
     
     Instruction instruction = {0};
     
@@ -773,8 +795,151 @@ Token ParseIfStatement(int chainColumn) {
   return afterBlock;
 }
 
-// Parse a var declaration, from just after the 'var' keyword. Returns the
-// lookahead token that follows the declaration.
+// Parse a while statement: while(condition) = body. Structured just like an
+// if statement, except the body jumps back to re-check the condition instead
+// of continuing past it.
+Token ParseWhileStatement(Token whileToken) {
+  int loopColumn = whileToken.column;
+  
+  Token lparen = LexerNext();
+  
+  if(lparen.type != TOKEN_LPAREN) {
+    CompileError(lparen.line, "Expected (");
+  }
+  
+  int loopStart = bytecodeCount;
+  
+  CondResult condition = ParseOrExpr(LexerNext());
+  
+  if(condition.next.type != TOKEN_RPAREN) {
+    CompileError(condition.next.line, "Expected )");
+  }
+  
+  Token assign = LexerNext();
+  
+  if(assign.type != TOKEN_OP_ASSIGN) {
+    CompileError(assign.line, "Expected =");
+  }
+  
+  Instruction jumpIfFalse = {0};
+  
+  jumpIfFalse.opcode = OP_JUMP_IF_FALSE;
+  
+  int jumpIfFalseIndex = EmitInstruction(jumpIfFalse);
+  
+  Token afterBlock = ParseBlock(LexerNext(), loopColumn, assign.line);
+  
+  Instruction jumpBack = {0};
+  
+  jumpBack.opcode = OP_JUMP;
+  jumpBack.jumpTarget = loopStart;
+  
+  EmitInstruction(jumpBack);
+  
+  bytecode[jumpIfFalseIndex].jumpTarget = bytecodeCount;
+  
+  return afterBlock;
+}
+
+// Parse a C-style for statement: for(init; condition; increment) = body.
+// Any of the three clauses may be left empty (an empty condition behaves as
+// always-true). The clauses are laid out in source order (init, condition,
+// increment, body), but executed as init, then repeatedly condition/body/
+// increment; a pair of unconditional jumps redirects the flow around the
+// increment on the way into the loop, and back through it at the end of
+// each iteration, so nothing needs to be parsed out of order or duplicated.
+Token ParseForStatement(Token forToken) {
+  int loopColumn = forToken.column;
+  
+  Token lparen = LexerNext();
+  
+  if(lparen.type != TOKEN_LPAREN) {
+    CompileError(lparen.line, "Expected (");
+  }
+  
+  // Init clause (optional)
+  Token afterInit = LexerNext();
+  
+  if(afterInit.type != TOKEN_SEMICOLON) {
+    afterInit = ParseStatement(afterInit);
+  } else {
+    afterInit = LexerNext();
+  }
+  
+  // Condition clause (optional, empty means always-true)
+  int loopStart = bytecodeCount;
+  int hasCondition = afterInit.type != TOKEN_SEMICOLON;
+  
+  Token afterCond;
+  
+  if(hasCondition) {
+    CondResult condition = ParseOrExpr(afterInit);
+    
+    if(condition.next.type != TOKEN_SEMICOLON) {
+      CompileError(condition.next.line, "Expected ;");
+    }
+    
+    afterCond = LexerNext();
+  } else {
+    afterCond = LexerNext();
+  }
+  
+  Instruction jumpIfFalse = {0};
+  int jumpIfFalseIndex = -1;
+  
+  if(hasCondition) {
+    jumpIfFalse.opcode = OP_JUMP_IF_FALSE;
+    jumpIfFalseIndex = EmitInstruction(jumpIfFalse);
+  }
+  
+  Instruction skipIncrement = {0};
+  
+  skipIncrement.opcode = OP_JUMP;
+  
+  int skipIncrementIndex = EmitInstruction(skipIncrement);
+  
+  // Increment clause (optional), laid out here so the loop body can jump
+  // back to it at the end of every iteration
+  int incrementStart = bytecodeCount;
+  
+  if(afterCond.type != TOKEN_RPAREN) {
+    afterCond = ParseIdentifierStatement(afterCond, TOKEN_RPAREN);
+  } else {
+    afterCond = LexerNext();
+  }
+  
+  Instruction jumpToStart = {0};
+  
+  jumpToStart.opcode = OP_JUMP;
+  jumpToStart.jumpTarget = loopStart;
+  
+  EmitInstruction(jumpToStart);
+  
+  // Body starts here; the very first pass jumps straight to it, skipping increment
+  int bodyStart = bytecodeCount;
+  
+  bytecode[skipIncrementIndex].jumpTarget = bodyStart;
+  
+  if(afterCond.type != TOKEN_OP_ASSIGN) {
+    CompileError(afterCond.line, "Expected =");
+  }
+  
+  Token afterBlock = ParseBlock(LexerNext(), loopColumn, afterCond.line);
+  
+  Instruction jumpToIncrement = {0};
+  
+  jumpToIncrement.opcode = OP_JUMP;
+  jumpToIncrement.jumpTarget = incrementStart;
+  
+  EmitInstruction(jumpToIncrement);
+  
+  if(hasCondition) {
+    bytecode[jumpIfFalseIndex].jumpTarget = bytecodeCount;
+  }
+  
+  return afterBlock;
+}
+
 // Emit bytecode to parse one value and store it into an array element, assuming
 // the destination index has already been pushed onto the stack by the caller
 // immediately before this call. Used by both the list and broadcast forms of
@@ -1225,7 +1390,20 @@ Token ParseVarDeclaration() {
 
 // Parse an identifier-led statement: assignment, or increment/decrement,
 // for either a scalar variable or one array element.
-Token ParseIdentifierStatement(Token token) {
+// Check that 'token' matches the expected statement terminator (';' for a
+// normal statement, ')' for a for-loop's increment clause), stopping the
+// program with a clear error if not.
+void ExpectTerminator(Token token, TokenType terminator) {
+  if(token.type != terminator) {
+    CompileError(token.line, terminator == TOKEN_RPAREN ? "Expected )" : "Expected ;");
+  }
+}
+
+// Parse an identifier-led statement: assignment, or increment/decrement,
+// for either a scalar variable or one array element. 'terminator' is the
+// token that ends the statement: ';' for a normal statement, or ')' when
+// this is used as a for-loop's increment clause.
+Token ParseIdentifierStatement(Token token, TokenType terminator) {
   int index = FindSymbol(token.value);
   
   if(index == -1) {
@@ -1276,9 +1454,7 @@ Token ParseIdentifierStatement(Token token) {
     
     Token semicolon = LexerNext();
     
-    if(semicolon.type != TOKEN_SEMICOLON) {
-      CompileError(semicolon.line, "Expected ;");
-    }
+    ExpectTerminator(semicolon, terminator);
     
     if(isIndexed) {
       // Duplicate the index bytecode: one copy to read, one to write back
@@ -1346,9 +1522,7 @@ Token ParseIdentifierStatement(Token token) {
       CompileError(rhsToken.line, "Cannot use a float value with += or -= on int variable '%s'", token.value);
     }
     
-    if(rhs.next.type != TOKEN_SEMICOLON) {
-      CompileError(rhs.next.line, "Expected ;");
-    }
+    ExpectTerminator(rhs.next, terminator);
     
     Instruction op = {0};
     
@@ -1378,9 +1552,7 @@ Token ParseIdentifierStatement(Token token) {
   if(varType == VAR_STR) {
     StringResult value = ParseStringValue(LexerNext());
     
-    if(value.next.type != TOKEN_SEMICOLON) {
-      CompileError(value.next.line, "Expected ;");
-    }
+    ExpectTerminator(value.next, terminator);
     
     Instruction instruction = {0};
     
@@ -1400,9 +1572,7 @@ Token ParseIdentifierStatement(Token token) {
     BoolResult value = ParseBoolValue(LexerNext());
     int valueEnd = bytecodeCount;
     
-    if(value.next.type != TOKEN_SEMICOLON) {
-      CompileError(value.next.line, "Expected ;");
-    }
+    ExpectTerminator(value.next, terminator);
     
     int isBareCopy = !value.isNoneLiteral && valueEnd > valueStart &&
       (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
@@ -1422,9 +1592,7 @@ Token ParseIdentifierStatement(Token token) {
     if(value.type == TOKEN_KW_NONE) {
       Token semicolon = LexerNext();
       
-      if(semicolon.type != TOKEN_SEMICOLON) {
-        CompileError(semicolon.line, "Expected ;");
-      }
+      ExpectTerminator(semicolon, terminator);
       
       Instruction instruction = {0};
       
@@ -1443,9 +1611,7 @@ Token ParseIdentifierStatement(Token token) {
         CompileError(value.line, "Cannot assign float value to int variable '%s'", token.value);
       }
       
-      if(result.next.type != TOKEN_SEMICOLON) {
-        CompileError(result.next.line, "Expected ;");
-      }
+      ExpectTerminator(result.next, terminator);
       
       int propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR);
@@ -1630,7 +1796,7 @@ Token ParseStatement(Token token) {
   }
   
   if(token.type == TOKEN_IDENTIFIER) {
-    return ParseIdentifierStatement(token);
+    return ParseIdentifierStatement(token, TOKEN_SEMICOLON);
   }
   
   if(token.type == TOKEN_KW_PRINT) {
@@ -1639,6 +1805,14 @@ Token ParseStatement(Token token) {
   
   if(token.type == TOKEN_KW_IF) {
     return ParseIfStatement(token.column);
+  }
+  
+  if(token.type == TOKEN_KW_WHILE) {
+    return ParseWhileStatement(token);
+  }
+  
+  if(token.type == TOKEN_KW_FOR) {
+    return ParseForStatement(token);
   }
   
   CompileError(token.line, "Expected statement");

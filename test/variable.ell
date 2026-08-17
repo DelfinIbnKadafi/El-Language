@@ -1,0 +1,24 @@
+// Variables
+var int integer = 10;
+print integer;
+print integer + 10;
+integer = 10;
+print integer;
+var str string = "Very Impresive Language!";
+var bool boolean = true;
+var float decimal;
+print string;
+print boolean;
+decimal = 1.0;
+var float el;
+el = integer / (decimal * 10);
+print el;
+
+// += -=
+integer = 0;
+integer += 10;
+print integer;
+integer -= 10;
+print integer;
+
+exit;

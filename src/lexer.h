@@ -9,8 +9,11 @@ typedef enum {
   TOKEN_KW_VAR,
   TOKEN_KW_IF,
   TOKEN_KW_ELSE,
+  TOKEN_KW_FOR,
+  TOKEN_KW_WHILE,
   TOKEN_KW_OR,
   TOKEN_KW_AND,
+  TOKEN_KW_NOT,
   TOKEN_KW_NONE,
   
   

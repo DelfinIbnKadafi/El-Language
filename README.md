@@ -26,36 +26,21 @@ The Virtual Machine handles program execution, memory management, and runtime op
 ## Code Example
 
 ```el
-print "Hello, World!";
-print "This is El Virtual Machine";
+print "Hello World!";
 
-var int integer = 10;
-print integer;
-print integer + 10;
-integer = 10;
-print integer;
+var int numbers = 10;
 
-var str string = "Very Impresive Language!";
-var bool boolean = true;
-var float decimal;
-
-print string;
-print boolean;
-
-decimal = 1.0;
-
-var float el;
-el = integer / (decimal * 10);
-print el;
-
-if(integer == 10 and el >= 1) =
-  print "Integer == 10";
-  if(integer > 0 or integer < 11) =
-    print "Integer between 0 and 11";
-else if(integer < 10) =
-  print "Integer < 10";
+if(numbers == 10) =
+  print "numbers == 10";
 else =
-  print "Integer isn't 10";
+  print "numbers != 10";
+
+for(numbers = 0; numbers <= 10; numbers++) =
+  print numbers;
+
+var str string[100] = "jojo";
+
+print string[6];
 
 exit;
 ```

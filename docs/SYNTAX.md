@@ -168,7 +168,7 @@ if(life == false) =
 
 #### Or/And Operator
 
-You can combine multiple conditions using the `or` and `and` operators.
+You can combine multiple conditions using the `or`, `and` and `not` operators.
 
 Example:
 
@@ -358,4 +358,27 @@ Example :
 
 ```el
 if(jj == NONE) =
+```
+
+## Loop
+
+#### For 
+
+```el
+for(initial_value; condition; increnment/decrenment) =
+  // code
+```
+
+Example :
+
+```el
+for(var int i = 0; i <= 10; i++) =
+  print i;
+```
+
+#### While
+
+```el
+while(condition) =
+  // code
 ```

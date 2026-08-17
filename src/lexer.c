@@ -148,6 +148,20 @@ Token LexerNext() {
     token.type = TOKEN_KW_ELSE;
     return token;
   }
+  // Read for keyword
+  if(strncmp(&source[position], "for", 3) == 0 && !IsWordChar(source[position + 3])) {
+    position += 3;
+    
+    token.type = TOKEN_KW_FOR;
+    return token;
+  }
+  // Read while keyword
+  if(strncmp(&source[position], "while", 5) == 0 && !IsWordChar(source[position + 5])) {
+    position += 5;
+    
+    token.type = TOKEN_KW_WHILE;
+    return token;
+  }
   // Read or keyword
   if(strncmp(&source[position], "or", 2) == 0 && !IsWordChar(source[position + 2])) {
     position += 2;
@@ -160,6 +174,13 @@ Token LexerNext() {
     position += 3;
     
     token.type = TOKEN_KW_AND;
+    return token;
+  }
+  // Read not keyword
+  if(strncmp(&source[position], "not", 3) == 0 && !IsWordChar(source[position + 3])) {
+    position += 3;
+    
+    token.type = TOKEN_KW_NOT;
     return token;
   }
   // Read NONE keyword
