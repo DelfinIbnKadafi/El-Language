@@ -52,8 +52,35 @@ typedef struct {
 // Symbol table storage
 Symbol symbols[MAX_VARIABLES];
 
-// Current symbol table size
+// Current symbol table size. At any point during parsing, symbols[0..symbolCount)
+// is exactly the set of variables currently visible (every enclosing scope that
+// hasn't closed yet, plus the current scope so far) -- see PushScope/PopScope.
 int symbolCount = 0;
+
+// Stack of block scopes. Each entry records the symbolCount snapshot from the
+// moment that scope was entered, so closing it can "forget" every variable
+// declared since then in O(1), making their name (and physical VM slot index)
+// available for reuse by a later sibling block. No shadowing is supported: a
+// name still visible from any open enclosing scope makes a redeclaration an
+// error, exactly like the existing (pre-scoping) duplicate-name check.
+#define MAX_SCOPE_DEPTH 64
+
+int scopeStack[MAX_SCOPE_DEPTH];
+int scopeDepth = 0;
+
+// Enter a new block scope (if/else/for/while body).
+void PushScope(int line) {
+  if(scopeDepth >= MAX_SCOPE_DEPTH) {
+    CompileError(line, "Too many nested blocks");
+  }
+  
+  scopeStack[scopeDepth++] = symbolCount;
+}
+
+// Leave the current block scope, forgetting every variable declared inside it.
+void PopScope(void) {
+  symbolCount = scopeStack[--scopeDepth];
+}
 
 // Find variable index by name, or -1 if not declared
 int FindSymbol(char* name) {
@@ -760,7 +787,11 @@ Token ParseIfStatement(int chainColumn) {
   
   int jumpIfFalseIndex = EmitInstruction(jumpIfFalse);
   
-  Token afterBlock = ParseBlock(LexerNext(), chainColumn, assign.line);
+  Token afterBlock;
+  
+  PushScope(assign.line);
+  afterBlock = ParseBlock(LexerNext(), chainColumn, assign.line);
+  PopScope();
   
   // Check for a matching else / else if at the same column as this chain
   if(afterBlock.type == TOKEN_KW_ELSE && afterBlock.column == chainColumn) {
@@ -783,7 +814,9 @@ Token ParseIfStatement(int chainColumn) {
         CompileError(afterElse.line, "Expected =");
       }
       
+      PushScope(afterElse.line);
       afterBlock = ParseBlock(LexerNext(), chainColumn, afterElse.line);
+      PopScope();
     }
     
     bytecode[jumpEndIndex].jumpTarget = bytecodeCount;
@@ -827,7 +860,9 @@ Token ParseWhileStatement(Token whileToken) {
   
   int jumpIfFalseIndex = EmitInstruction(jumpIfFalse);
   
+  PushScope(assign.line);
   Token afterBlock = ParseBlock(LexerNext(), loopColumn, assign.line);
+  PopScope();
   
   Instruction jumpBack = {0};
   
@@ -856,6 +891,11 @@ Token ParseForStatement(Token forToken) {
   if(lparen.type != TOKEN_LPAREN) {
     CompileError(lparen.line, "Expected (");
   }
+  
+  // The whole for-statement (init, condition, increment, body) shares one
+  // scope, so a counter declared in the init clause stays visible throughout
+  // and disappears once the loop ends -- same as for(int i...) in C-like languages.
+  PushScope(forToken.line);
   
   // Init clause (optional)
   Token afterInit = LexerNext();
@@ -936,6 +976,8 @@ Token ParseForStatement(Token forToken) {
   if(hasCondition) {
     bytecode[jumpIfFalseIndex].jumpTarget = bytecodeCount;
   }
+  
+  PopScope();
   
   return afterBlock;
 }

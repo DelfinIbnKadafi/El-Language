@@ -62,14 +62,33 @@ void CheckAllocationSize(long count, long elementSize, int line) {
   }
 }
 
+// Frees whatever storage this variable slot currently holds (if any) and
+// resets it to a clean, unallocated state. MUST be called before an
+// OP_DECLARE_* instruction overwrites the slot's type/arraySize/etc, since it
+// relies on those fields still holding the slot's PREVIOUS declaration to
+// free correctly. This matters once block scoping is involved: sibling
+// blocks can let two unrelated variables (different name, possibly different
+// type or array size) share the same physical slot, and loop bodies can
+// re-run the same declare instruction on every iteration.
+void FreeVariableStorage(int varIndex) {
+  free(variables[varIndex].numbers);
+  variables[varIndex].numbers = NULL;
+  
+  if(variables[varIndex].strings != NULL) {
+    for(int i = 0; i < variables[varIndex].arraySize; i++) {
+      free(variables[varIndex].strings[i]);
+    }
+    
+    free(variables[varIndex].strings);
+    variables[varIndex].strings = NULL;
+  }
+  
+  free(variables[varIndex].isNone);
+  variables[varIndex].isNone = NULL;
+}
+
 void AllocateNumberStorage(int varIndex, int size, int line) {
   CheckAllocationSize(size, sizeof(double) + sizeof(int), line);
-  
-  // Free any previous allocation for this variable slot, in case this declare
-  // instruction sits inside a loop body and is running again. free(NULL) is
-  // always safe, so this is harmless on the very first declaration too.
-  free(variables[varIndex].numbers);
-  free(variables[varIndex].isNone);
   
   variables[varIndex].numbers = calloc(size, sizeof(double));
   variables[varIndex].isNone = malloc(size * sizeof(int));
@@ -85,18 +104,6 @@ void AllocateNumberStorage(int varIndex, int size, int line) {
 // could not be obtained.
 void AllocateStringStorage(int varIndex, int size, int strSize, int line) {
   CheckAllocationSize(size, strSize + 1 + sizeof(char*) + sizeof(int), line);
-  
-  // Free any previous allocation for this variable slot, in case this declare
-  // instruction sits inside a loop body and is running again.
-  if(variables[varIndex].strings != NULL) {
-    for(int i = 0; i < variables[varIndex].arraySize; i++) {
-      free(variables[varIndex].strings[i]);
-    }
-    
-    free(variables[varIndex].strings);
-  }
-  
-  free(variables[varIndex].isNone);
   
   variables[varIndex].strings = malloc(size * sizeof(char*));
   variables[varIndex].isNone = malloc(size * sizeof(int));
@@ -210,6 +217,8 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_DECLARE_INT:
       case OP_DECLARE_FLOAT:
       case OP_DECLARE_BOOL: {
+        FreeVariableStorage(instruction.varIndex);
+        
         strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
         variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
         
@@ -246,6 +255,8 @@ void VMRun(Instruction* code, int count, char* filename) {
         break;
       }
       case OP_DECLARE_STR: {
+        FreeVariableStorage(instruction.varIndex);
+        
         strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
         variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
         

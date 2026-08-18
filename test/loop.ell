@@ -6,3 +6,8 @@ var int j = 0;
 while(j != 10) =
   j++;
   print j;
+
+var int i;
+
+for(i = 0; i < 11; i++) =
+  print i;

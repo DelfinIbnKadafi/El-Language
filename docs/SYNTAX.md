@@ -382,3 +382,12 @@ for(var int i = 0; i <= 10; i++) =
 while(condition) =
   // code
 ```
+
+## Global and Local variable
+
+If you created a variable not in a stetement (if or loop), the variable gonna be global,
+and can use from any place in this world. Else if you created variable in statement, is gonna
+be local, and jist can use in place where that variable declarated.
+
+The local variable can have same name with global variable, but the global variable
+can have same name with local variable. Same with many languages.
