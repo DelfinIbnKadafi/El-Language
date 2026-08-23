@@ -162,6 +162,20 @@ Token LexerNext() {
     token.type = TOKEN_KW_WHILE;
     return token;
   }
+  // Read function keyword
+  if(strncmp(&source[position], "function", 8) == 0 && !IsWordChar(source[position + 8])) {
+    position += 8;
+    
+    token.type = TOKEN_KW_FUNCTION;
+    return token;
+  }
+  // Read return keyword
+  if(strncmp(&source[position], "return", 6) == 0 && !IsWordChar(source[position + 6])) {
+    position += 6;
+    
+    token.type = TOKEN_KW_RETURN;
+    return token;
+  }
   // Read or keyword
   if(strncmp(&source[position], "or", 2) == 0 && !IsWordChar(source[position + 2])) {
     position += 2;

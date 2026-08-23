@@ -1,4 +1,4 @@
-/ array variable
+// array variable
 var int array_int[10];
 array_int[7] = 5;
 print array_int[5+2];

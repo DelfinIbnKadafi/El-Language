@@ -1,23 +1,3 @@
-/*
-  El Language 0.0.1 Alpha - print
-  El Language 0.0.2 Alpha - Variable (int, str, bool, float) and math
-  El Language 0.1.0 - if / else if / else, comparison, and increment/decrement
-  El Language 0.1.1 - comments (line and block), inline single-line block body,
-                      empty if/else/else if body no longer errors
-  El Language 0.1.2 - fixed block body leaking out after inline+indented mix,
-                      added unary minus/plus, clearer error messages
-  El Language 0.2.0 - arrays (var type name[size];), sized strings (str[size]),
-                      parsing logic moved to its own parser.c / parser.h
-  El Language 0.2.1 - array initializers (broadcast and { list } forms), and
-                      the NONE value for int, float, str, and bool variables
-  El Language 0.2.2 - array size limited only by available memory (was capped
-                      at 64), array-to-array string copy, faster broadcast
-                      initializers for large arrays
-  El Language 0.2.3 - str[size] no longer capped at 255; unset size still
-                      defaults to 255; += and -= compound assignment
-  El Language 0.3.0 - for and while loops
-*/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include "lexer.h"

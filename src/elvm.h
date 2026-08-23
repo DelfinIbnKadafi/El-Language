@@ -12,6 +12,10 @@
 // Max characters per string, per array element (matches INSTRUCTION_MAX_LEN)
 #define MAX_STR_LEN 256
 
+// Max depth of function call nesting (including recursion), guards against
+// runaway/infinite recursion with a clean error instead of a native crash.
+#define MAX_CALL_DEPTH 500
+
 // VM instruction types
 typedef enum {
   OP_PRINT,
@@ -49,7 +53,12 @@ typedef enum {
   OP_POP,
   OP_PUSH_LAST_NONE_FLAG,
   OP_STR_IS_NONE,
-  OP_STR_IS_NOT_NONE
+  OP_STR_IS_NOT_NONE,
+  OP_CALL,
+  OP_RETURN,
+  OP_PUSH_STRING_VALUE,
+  OP_POP_STRING_VALUE,
+  OP_PRINT_STRING_VALUE
 } Opcode;
 
 // Supported variable types
@@ -142,6 +151,19 @@ typedef struct {
   // just read by the immediately preceding OP_PUSH_VAR/OP_PUSH_ARR, used by
   // OP_STORE_VAR/STORE_ARR for bare "x = y;" style assignments
   int propagateNone;
+  
+  // varIndex refers to a function-local slot (current call frame) instead of
+  // a global variable. Used by every opcode that touches a variable.
+  int isLocal;
+  
+  // srcVarIndex refers to a function-local slot instead of a global variable.
+  // Used by OP_DECLARE_STR / OP_STORE_STR / OP_BROADCAST_STR_ARR.
+  int srcIsLocal;
+  
+  // Instead of using stringLiteral/srcVarIndex, pop the string value straight
+  // off the string-value stack. Used by OP_DECLARE_STR / OP_STORE_STR to bind
+  // a string parameter, or to receive a function call's string return value.
+  int sourceFromArgStack;
 } Instruction;
 
 // Execute bytecode

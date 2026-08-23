@@ -3,10 +3,52 @@
 #include <string.h>
 #include "elvm.h"
 
-#define MAX_STACK 256
+// Sized generously since recursive functions can leave several pending
+// values on this stack per nesting level (e.g. 'return 1 + f(n - 1);' keeps
+// its '1' here while the recursive call runs), not just one per call depth.
+#define MAX_STACK 8192
 
 Variable variables[MAX_VARIABLES];
 int variableCount = 0;
+
+// Function-local variable slots. Unlike globals (above), a local slot's
+// storage is not one fixed Variable -- it's swapped in/out per call (see
+// CallFrame below) so that recursive calls each get their own independent
+// copy of a function's parameters and local variables. NULL until a call
+// currently has that slot allocated.
+Variable* localSlots[MAX_VARIABLES];
+
+// One entry per currently-active function call (a real call stack), enabling
+// correct recursion: each call gets its own storage for whichever local slots
+// it declares (parameters + body locals), and the slot each one occupied
+// before this call (NULL, or the paused outer call's own instance if this is
+// a recursive re-entry) is restored once this call returns.
+typedef struct {
+  int returnAddress;
+  
+  int savedSlots[MAX_VARIABLES];
+  Variable* savedPointers[MAX_VARIABLES];
+  int savedCount;
+  
+  // Whether a given local slot has already been bound during this specific
+  // call, so a declare instruction that re-runs (e.g. a var inside a loop
+  // inside the function) reuses its own storage instead of re-registering.
+  int slotRegistered[MAX_VARIABLES];
+} CallFrame;
+
+CallFrame callStack[MAX_CALL_DEPTH];
+int callStackTop = 0;
+
+// String-value stack, used to pass string arguments into a function call and
+// to receive a function's string return value. A real stack (not a flat
+// array indexed by position) so nested calls -- e.g. a function call used as
+// the argument to another call -- nest correctly, the same way the numeric
+// eval stack already does for arithmetic.
+#define MAX_STRING_STACK 1024
+
+char stringValueStack[MAX_STRING_STACK][INSTRUCTION_MAX_LEN];
+int stringValueStackIsNone[MAX_STRING_STACK];
+int stringValueStackTop = 0;
 
 // Evaluation stack, used for numeric expression math (int, float, bool, comparisons, indices)
 double stack[MAX_STACK];
@@ -21,6 +63,11 @@ int lastPushedIsNone;
 
 // Push value onto evaluation stack
 void Push(double value) {
+  if(stackTop >= MAX_STACK) {
+    printf("%s : Stack overflow: expression nesting or recursion too deep\n", currentFilename);
+    exit(1);
+  }
+  
   stack[stackTop++] = value;
 }
 
@@ -62,6 +109,16 @@ void CheckAllocationSize(long count, long elementSize, int line) {
   }
 }
 
+// Resolve a variable reference to its physical storage: the global table for
+// a global variable, or the currently-active call's own slot for a local one.
+Variable* ResolveVariable(int varIndex, int isLocal) {
+  if(isLocal) {
+    return localSlots[varIndex];
+  }
+  
+  return &variables[varIndex];
+}
+
 // Frees whatever storage this variable slot currently holds (if any) and
 // resets it to a clean, unallocated state. MUST be called before an
 // OP_DECLARE_* instruction overwrites the slot's type/arraySize/etc, since it
@@ -70,30 +127,30 @@ void CheckAllocationSize(long count, long elementSize, int line) {
 // blocks can let two unrelated variables (different name, possibly different
 // type or array size) share the same physical slot, and loop bodies can
 // re-run the same declare instruction on every iteration.
-void FreeVariableStorage(int varIndex) {
-  free(variables[varIndex].numbers);
-  variables[varIndex].numbers = NULL;
+void FreeVariableStorage(Variable* v) {
+  free(v->numbers);
+  v->numbers = NULL;
   
-  if(variables[varIndex].strings != NULL) {
-    for(int i = 0; i < variables[varIndex].arraySize; i++) {
-      free(variables[varIndex].strings[i]);
+  if(v->strings != NULL) {
+    for(int i = 0; i < v->arraySize; i++) {
+      free(v->strings[i]);
     }
     
-    free(variables[varIndex].strings);
-    variables[varIndex].strings = NULL;
+    free(v->strings);
+    v->strings = NULL;
   }
   
-  free(variables[varIndex].isNone);
-  variables[varIndex].isNone = NULL;
+  free(v->isNone);
+  v->isNone = NULL;
 }
 
-void AllocateNumberStorage(int varIndex, int size, int line) {
+void AllocateNumberStorage(Variable* v, int size, int line) {
   CheckAllocationSize(size, sizeof(double) + sizeof(int), line);
   
-  variables[varIndex].numbers = calloc(size, sizeof(double));
-  variables[varIndex].isNone = malloc(size * sizeof(int));
+  v->numbers = calloc(size, sizeof(double));
+  v->isNone = malloc(size * sizeof(int));
   
-  if(variables[varIndex].numbers == NULL || variables[varIndex].isNone == NULL) {
+  if(v->numbers == NULL || v->isNone == NULL) {
     printf("%s (%d) : Failed to allocate array of size %d\n", currentFilename, line, size);
     exit(1);
   }
@@ -102,21 +159,21 @@ void AllocateNumberStorage(int varIndex, int size, int line) {
 // Allocate the string storage for a variable holding 'size' elements, each up
 // to 'strSize' characters, stopping the program with a clear error if memory
 // could not be obtained.
-void AllocateStringStorage(int varIndex, int size, int strSize, int line) {
+void AllocateStringStorage(Variable* v, int size, int strSize, int line) {
   CheckAllocationSize(size, strSize + 1 + sizeof(char*) + sizeof(int), line);
   
-  variables[varIndex].strings = malloc(size * sizeof(char*));
-  variables[varIndex].isNone = malloc(size * sizeof(int));
+  v->strings = malloc(size * sizeof(char*));
+  v->isNone = malloc(size * sizeof(int));
   
-  if(variables[varIndex].strings == NULL || variables[varIndex].isNone == NULL) {
+  if(v->strings == NULL || v->isNone == NULL) {
     printf("%s (%d) : Failed to allocate array of size %d\n", currentFilename, line, size);
     exit(1);
   }
   
   for(int i = 0; i < size; i++) {
-    variables[varIndex].strings[i] = calloc(strSize + 1, sizeof(char));
+    v->strings[i] = calloc(strSize + 1, sizeof(char));
     
-    if(variables[varIndex].strings[i] == NULL) {
+    if(v->strings[i] == NULL) {
       printf("%s (%d) : Failed to allocate string storage\n", currentFilename, line);
       exit(1);
     }
@@ -148,30 +205,103 @@ void FreeAllVariables() {
   }
 }
 
-// Resolve the string to copy for OP_DECLARE_STR / OP_STORE_STR into 'out': either
-// a literal, a whole scalar variable, or one element of an array variable (index
-// popped from the stack when srcIsArray is set). Writes the resolved source index
-// (0 for a literal or scalar source) into 'outSrcIdx' for the caller to reuse.
-// Must be called before popping any destination index, since the source index
-// (if any) was pushed after it and therefore sits on top of the stack.
-void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* outSrcIdx) {
-  char* text;
-  int srcIdx = 0;
-  
-  if(instruction.srcVarIndex == -1) {
-    text = instruction.stringLiteral;
-  } else {
-    if(instruction.srcIsArray) {
-      srcIdx = CheckBounds(Pop(), variables[instruction.srcVarIndex].arraySize, instruction.line);
-    }
+// Resolve the string to copy for OP_DECLARE_STR / OP_STORE_STR / OP_BROADCAST_STR_ARR
+// into 'out', and write whether it's NONE into 'outIsNone'. Handles three source
+// kinds: a value popped from the string-value stack (used to bind a string
+// parameter, or to receive a function call's string return value), a literal,
+// or an existing variable (whole, or one array element -- index popped from
+// the stack when srcIsArray is set). Must be called before popping any
+// destination index: a variable source's array index, if any, was pushed
+// after it and therefore sits on top of the stack.
+void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* outIsNone) {
+  if(instruction.sourceFromArgStack) {
+    stringValueStackTop--;
     
-    text = variables[instruction.srcVarIndex].strings[srcIdx];
+    strncpy(out, stringValueStack[stringValueStackTop], outSize);
+    out[outSize] = '\0';
+    
+    *outIsNone = stringValueStackIsNone[stringValueStackTop];
+    return;
   }
   
-  strncpy(out, text, outSize);
+  if(instruction.srcVarIndex == -1) {
+    strncpy(out, instruction.stringLiteral, outSize);
+    out[outSize] = '\0';
+    
+    *outIsNone = 0;
+    return;
+  }
+  
+  Variable* srcV = ResolveVariable(instruction.srcVarIndex, instruction.srcIsLocal);
+  int srcIdx = 0;
+  
+  if(instruction.srcIsArray) {
+    srcIdx = CheckBounds(Pop(), srcV->arraySize, instruction.line);
+  }
+  
+  strncpy(out, srcV->strings[srcIdx], outSize);
   out[outSize] = '\0';
   
-  *outSrcIdx = srcIdx;
+  *outIsNone = srcV->isNone[srcIdx];
+}
+
+// Enter a new function call: remember where to resume once it returns.
+// Local-slot storage is bound lazily as each parameter/var declare
+// instruction actually executes (see OP_DECLARE_* below), not here.
+void PushCallFrame(int returnAddress, int line) {
+  if(callStackTop >= MAX_CALL_DEPTH) {
+    printf("%s (%d) : Stack overflow: too many nested/recursive function calls\n", currentFilename, line);
+    exit(1);
+  }
+  
+  CallFrame* frame = &callStack[callStackTop++];
+  
+  frame->returnAddress = returnAddress;
+  frame->savedCount = 0;
+  
+  for(int i = 0; i < MAX_VARIABLES; i++) {
+    frame->slotRegistered[i] = 0;
+  }
+}
+
+// Leave the current function call: free every local slot this specific call
+// bound, and restore whatever occupied that slot before this call (NULL, or
+// the paused outer call's own instance if this was a recursive re-entry).
+// Returns the address execution should resume at.
+int PopCallFrame() {
+  CallFrame* frame = &callStack[--callStackTop];
+  
+  for(int i = 0; i < frame->savedCount; i++) {
+    int slot = frame->savedSlots[i];
+    
+    FreeVariableStorage(localSlots[slot]);
+    free(localSlots[slot]);
+    
+    localSlots[slot] = frame->savedPointers[i];
+  }
+  
+  return frame->returnAddress;
+}
+
+// Bind a local slot for use during the currently-active call: the first time
+// this slot is touched during this specific call, stash whatever occupied it
+// before (for restoration on return) and start it fresh; a later re-run of
+// the same declare instruction (e.g. a var inside a loop inside the
+// function) reuses the storage already bound earlier in this same call.
+// Returns the slot's live storage, ready to be (re)populated by the caller.
+Variable* BindLocalSlot(int varIndex) {
+  CallFrame* frame = &callStack[callStackTop - 1];
+  
+  if(!frame->slotRegistered[varIndex]) {
+    frame->savedSlots[frame->savedCount] = varIndex;
+    frame->savedPointers[frame->savedCount] = localSlots[varIndex];
+    frame->savedCount++;
+    frame->slotRegistered[varIndex] = 1;
+    
+    localSlots[varIndex] = calloc(1, sizeof(Variable));
+  }
+  
+  return localSlots[varIndex];
 }
 
 void VMRun(Instruction* code, int count, char* filename) {
@@ -201,123 +331,136 @@ void VMRun(Instruction* code, int count, char* filename) {
         break;
       }
       case OP_PRINT_STR_VAR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
         int idx = 0;
         
         if(instruction.destIsArray) {
-          idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          idx = CheckBounds(Pop(), v->arraySize, instruction.line);
         }
         
-        if(variables[instruction.varIndex].isNone[idx]) {
+        if(v->isNone[idx]) {
           printf("NONE\n");
         } else {
-          printf("%s\n", variables[instruction.varIndex].strings[idx]);
+          printf("%s\n", v->strings[idx]);
         }
         break;
       }
       case OP_DECLARE_INT:
       case OP_DECLARE_FLOAT:
       case OP_DECLARE_BOOL: {
-        FreeVariableStorage(instruction.varIndex);
+        Variable* v = instruction.isLocal ? BindLocalSlot(instruction.varIndex) : &variables[instruction.varIndex];
         
-        strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
-        variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
+        FreeVariableStorage(v);
+        
+        strncpy(v->name, instruction.text, TOKEN_MAX_LEN - 1);
+        v->name[TOKEN_MAX_LEN - 1] = '\0';
         
         if(instruction.opcode == OP_DECLARE_INT) {
-          variables[instruction.varIndex].type = VAR_INT;
+          v->type = VAR_INT;
         } else if(instruction.opcode == OP_DECLARE_FLOAT) {
-          variables[instruction.varIndex].type = VAR_FLOAT;
+          v->type = VAR_FLOAT;
         } else {
-          variables[instruction.varIndex].type = VAR_BOOL;
+          v->type = VAR_BOOL;
         }
         
         int size = instruction.isArray ? instruction.arraySize : 1;
         
-        variables[instruction.varIndex].isArray = instruction.isArray;
-        variables[instruction.varIndex].arraySize = size;
+        v->isArray = instruction.isArray;
+        v->arraySize = size;
         
-        AllocateNumberStorage(instruction.varIndex, size, instruction.line);
+        AllocateNumberStorage(v, size, instruction.line);
         
         if(instruction.isArray) {
           // Every element starts as NONE; a broadcast/list initializer, if any,
           // is applied afterward through separate instructions
           for(int i = 0; i < size; i++) {
-            variables[instruction.varIndex].isNone[i] = 1;
+            v->isNone[i] = 1;
           }
         } else if(instruction.storeNone) {
-          variables[instruction.varIndex].isNone[0] = 1;
+          v->isNone[0] = 1;
         } else {
-          // Scalar: pop its single initializer value
-          variables[instruction.varIndex].numbers[0] = Pop();
-          variables[instruction.varIndex].isNone[0] = instruction.propagateNone ? lastPushedIsNone : 0;
+          // Scalar: pop its single initializer value (also used to bind a
+          // numeric parameter -- the caller already pushed the argument
+          // value before jumping in)
+          v->numbers[0] = Pop();
+          v->isNone[0] = instruction.propagateNone ? lastPushedIsNone : 0;
         }
         
         variableCount++;
         break;
       }
       case OP_DECLARE_STR: {
-        FreeVariableStorage(instruction.varIndex);
+        Variable* v = instruction.isLocal ? BindLocalSlot(instruction.varIndex) : &variables[instruction.varIndex];
         
-        strncpy(variables[instruction.varIndex].name, instruction.text, TOKEN_MAX_LEN - 1);
-        variables[instruction.varIndex].name[TOKEN_MAX_LEN - 1] = '\0';
+        FreeVariableStorage(v);
         
-        variables[instruction.varIndex].type = VAR_STR;
+        strncpy(v->name, instruction.text, TOKEN_MAX_LEN - 1);
+        v->name[TOKEN_MAX_LEN - 1] = '\0';
+        
+        v->type = VAR_STR;
         
         int size = instruction.isArray ? instruction.arraySize : 1;
         int strSize = instruction.strSize > 0 ? instruction.strSize : (MAX_STR_LEN - 1);
         
-        variables[instruction.varIndex].isArray = instruction.isArray;
-        variables[instruction.varIndex].arraySize = size;
-        variables[instruction.varIndex].strSize = strSize;
+        v->isArray = instruction.isArray;
+        v->arraySize = size;
+        v->strSize = strSize;
         
-        AllocateStringStorage(instruction.varIndex, size, strSize, instruction.line);
+        AllocateStringStorage(v, size, strSize, instruction.line);
         
         if(instruction.isArray) {
           // Every element starts as NONE; a broadcast/list initializer, if any,
           // is applied afterward through separate instructions
           for(int i = 0; i < size; i++) {
-            variables[instruction.varIndex].isNone[i] = 1;
+            v->isNone[i] = 1;
           }
         } else if(instruction.storeNone) {
-          variables[instruction.varIndex].isNone[0] = 1;
+          v->isNone[0] = 1;
         } else {
-          // Scalar: copy its single initializer string
-          int srcIdx = 0;
+          // Scalar: copy its single initializer string (also used to bind a
+          // string parameter, or receive a function's string return value,
+          // via sourceFromArgStack inside ResolveStoreSource)
+          int isNone = 0;
           
-          ResolveStoreSource(instruction, variables[instruction.varIndex].strings[0], strSize, &srcIdx);
+          ResolveStoreSource(instruction, v->strings[0], strSize, &isNone);
           
-          variables[instruction.varIndex].isNone[0] =
-            (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
+          v->isNone[0] = isNone;
         }
         
         variableCount++;
         break;
       }
-      case OP_STORE_VAR:
+      case OP_STORE_VAR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
         // Overwrite an existing scalar int, float, or bool variable
         if(instruction.storeNone) {
-          variables[instruction.varIndex].isNone[0] = 1;
+          v->isNone[0] = 1;
         } else {
-          variables[instruction.varIndex].numbers[0] = Pop();
-          variables[instruction.varIndex].isNone[0] = instruction.propagateNone ? lastPushedIsNone : 0;
+          v->numbers[0] = Pop();
+          v->isNone[0] = instruction.propagateNone ? lastPushedIsNone : 0;
         }
         break;
+      }
       case OP_STORE_STR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
         if(instruction.storeNone) {
           int destIdx = 0;
           
           if(instruction.destIsArray) {
-            destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+            destIdx = CheckBounds(Pop(), v->arraySize, instruction.line);
           }
           
-          variables[instruction.varIndex].strings[destIdx][0] = '\0';
-          variables[instruction.varIndex].isNone[destIdx] = 1;
+          v->strings[destIdx][0] = '\0';
+          v->isNone[destIdx] = 1;
         } else {
           // Resolve the source (and pop its index, if it's an array element)
           // BEFORE popping the destination index: the source index, if any,
           // was pushed after the destination index and sits on top of it.
           // The intermediate buffer is sized to the destination's own strSize,
           // since text is truncated to fit the destination anyway.
-          int maxLen = variables[instruction.varIndex].strSize;
+          int maxLen = v->strSize;
           char* buffer = malloc(maxLen + 1);
           
           if(buffer == NULL) {
@@ -325,21 +468,20 @@ void VMRun(Instruction* code, int count, char* filename) {
             exit(1);
           }
           
-          int srcIdx = 0;
+          int isNone = 0;
           
-          ResolveStoreSource(instruction, buffer, maxLen, &srcIdx);
+          ResolveStoreSource(instruction, buffer, maxLen, &isNone);
           
           int destIdx = 0;
           
           if(instruction.destIsArray) {
-            destIdx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+            destIdx = CheckBounds(Pop(), v->arraySize, instruction.line);
           }
           
-          strncpy(variables[instruction.varIndex].strings[destIdx], buffer, maxLen);
-          variables[instruction.varIndex].strings[destIdx][maxLen] = '\0';
+          strncpy(v->strings[destIdx], buffer, maxLen);
+          v->strings[destIdx][maxLen] = '\0';
           
-          variables[instruction.varIndex].isNone[destIdx] =
-            (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
+          v->isNone[destIdx] = isNone;
           
           free(buffer);
         }
@@ -347,33 +489,42 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_PUSH_NUMBER:
         Push(instruction.numberValue);
+        lastPushedIsNone = instruction.storeNone;
         break;
-      case OP_PUSH_VAR:
-        Push(variables[instruction.varIndex].numbers[0]);
-        lastPushedIsNone = variables[instruction.varIndex].isNone[0];
-        break;
-      case OP_PUSH_ARR: {
-        int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+      case OP_PUSH_VAR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
         
-        Push(variables[instruction.varIndex].numbers[idx]);
-        lastPushedIsNone = variables[instruction.varIndex].isNone[idx];
+        Push(v->numbers[0]);
+        lastPushedIsNone = v->isNone[0];
+        break;
+      }
+      case OP_PUSH_ARR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        int idx = CheckBounds(Pop(), v->arraySize, instruction.line);
+        
+        Push(v->numbers[idx]);
+        lastPushedIsNone = v->isNone[idx];
         break;
       }
       case OP_STORE_ARR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
         if(instruction.storeNone) {
-          int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          int idx = CheckBounds(Pop(), v->arraySize, instruction.line);
           
-          variables[instruction.varIndex].isNone[idx] = 1;
+          v->isNone[idx] = 1;
         } else {
           double value = Pop();
-          int idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          int idx = CheckBounds(Pop(), v->arraySize, instruction.line);
           
-          variables[instruction.varIndex].numbers[idx] = value;
-          variables[instruction.varIndex].isNone[idx] = instruction.propagateNone ? lastPushedIsNone : 0;
+          v->numbers[idx] = value;
+          v->isNone[idx] = instruction.propagateNone ? lastPushedIsNone : 0;
         }
         break;
       }
       case OP_BROADCAST_ARR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
         // Fill every element of the array with the same value, evaluated once.
         // Keeps bytecode size constant regardless of array size.
         double value = 0;
@@ -384,17 +535,19 @@ void VMRun(Instruction* code, int count, char* filename) {
           noneFlag = instruction.propagateNone ? lastPushedIsNone : 0;
         }
         
-        int size = variables[instruction.varIndex].arraySize;
+        int size = v->arraySize;
         
         for(int i = 0; i < size; i++) {
-          variables[instruction.varIndex].numbers[i] = value;
-          variables[instruction.varIndex].isNone[i] = noneFlag;
+          v->numbers[i] = value;
+          v->isNone[i] = noneFlag;
         }
         break;
       }
       case OP_BROADCAST_STR_ARR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
         // Fill every element of a string array with the same text, resolved once.
-        int maxLen = variables[instruction.varIndex].strSize;
+        int maxLen = v->strSize;
         char* buffer = malloc(maxLen + 1);
         int noneFlag;
         
@@ -407,19 +560,15 @@ void VMRun(Instruction* code, int count, char* filename) {
           buffer[0] = '\0';
           noneFlag = 1;
         } else {
-          int srcIdx = 0;
-          
-          ResolveStoreSource(instruction, buffer, maxLen, &srcIdx);
-          
-          noneFlag = (instruction.srcVarIndex != -1) ? variables[instruction.srcVarIndex].isNone[srcIdx] : 0;
+          ResolveStoreSource(instruction, buffer, maxLen, &noneFlag);
         }
         
-        int size = variables[instruction.varIndex].arraySize;
+        int size = v->arraySize;
         
         for(int i = 0; i < size; i++) {
-          strncpy(variables[instruction.varIndex].strings[i], buffer, maxLen);
-          variables[instruction.varIndex].strings[i][maxLen] = '\0';
-          variables[instruction.varIndex].isNone[i] = noneFlag;
+          strncpy(v->strings[i], buffer, maxLen);
+          v->strings[i][maxLen] = '\0';
+          v->isNone[i] = noneFlag;
         }
         
         free(buffer);
@@ -558,15 +707,55 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_STR_IS_NONE:
       case OP_STR_IS_NOT_NONE: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
         int idx = 0;
         
         if(instruction.destIsArray) {
-          idx = CheckBounds(Pop(), variables[instruction.varIndex].arraySize, instruction.line);
+          idx = CheckBounds(Pop(), v->arraySize, instruction.line);
         }
         
-        int isNone = variables[instruction.varIndex].isNone[idx];
+        int isNone = v->isNone[idx];
         
         Push((instruction.opcode == OP_STR_IS_NONE ? isNone : !isNone) ? 1 : 0);
+        break;
+      }
+      case OP_CALL:
+        PushCallFrame(ip, instruction.line);
+        ip = instruction.jumpTarget;
+        break;
+      case OP_RETURN:
+        ip = PopCallFrame();
+        break;
+      case OP_PUSH_STRING_VALUE: {
+        if(stringValueStackTop >= MAX_STRING_STACK) {
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        if(instruction.storeNone) {
+          stringValueStack[stringValueStackTop][0] = '\0';
+          stringValueStackIsNone[stringValueStackTop] = 1;
+        } else {
+          int isNone = 0;
+          
+          ResolveStoreSource(instruction, stringValueStack[stringValueStackTop], INSTRUCTION_MAX_LEN - 1, &isNone);
+          stringValueStackIsNone[stringValueStackTop] = isNone;
+        }
+        
+        stringValueStackTop++;
+        break;
+      }
+      case OP_POP_STRING_VALUE:
+        stringValueStackTop--;
+        break;
+      case OP_PRINT_STRING_VALUE: {
+        stringValueStackTop--;
+        
+        if(stringValueStackIsNone[stringValueStackTop]) {
+          printf("NONE\n");
+        } else {
+          printf("%s\n", stringValueStack[stringValueStackTop]);
+        }
         break;
       }
       case OP_HALT:

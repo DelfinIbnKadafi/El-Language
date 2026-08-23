@@ -154,10 +154,10 @@ This is equivalent to:
 if(life == true) =
 ```
 
-Use `!` to check for `false`.
+Use `not` to check for `false`.
 
 ```el
-if(!life) =
+if(not life) =
 ```
 
 This is equivalent to:
@@ -166,14 +166,30 @@ This is equivalent to:
 if(life == false) =
 ```
 
-#### Or/And Operator
+#### Or/And/Not Operator
 
 You can combine multiple conditions using the `or`, `and` and `not` operators.
 
 Example:
 
 ```el
-if(condition or condition)
+if(condition or condition) =
+```
+
+```el
+if(condition and condition) =
+```
+
+`not` reverses a condition, and can be chained together with `and`/`or`.
+
+Example:
+
+```el
+if(not condition) =
+```
+
+```el
+while(i < 10 and not found) =
 ```
 
 #### One-Line Statement
@@ -299,6 +315,21 @@ The stored value becomes:
 
 Extra characters are removed automatically, and the program continues execution without crashing.
 
+Array size and string size have no fixed upper limit — you can make them as large as your device's memory allows.
+
+#### Copying Values
+
+You can copy the value of one array element into another, as long as they have the same data type.
+
+Example:
+
+```el
+var str names[5];
+var str backup[5];
+
+backup[0] = names[0];
+```
+
 ## Initial Value Array
 
 If you wanna create a variable with array index, you also put default/initial value in that variable.
@@ -383,11 +414,136 @@ while(condition) =
   // code
 ```
 
-## Global and Local variable
+## Global and Local Variable
 
-If you created a variable not in a stetement (if or loop), the variable gonna be global,
-and can use from any place in this world. Else if you created variable in statement, is gonna
-be local, and jist can use in place where that variable declarated.
+If you create a variable outside of any statement (`if`, `for`, `while`, or `function`), the variable is global, and can be used from anywhere in the file below where it was declared.
 
-The local variable can have same name with global variable, but the global variable
-can have same name with local variable. Same with many languages.
+If you create a variable inside a statement, it becomes local, and can only be used inside the block where it was declared. Once the block ends, the variable is gone.
+
+Example:
+
+```el
+if(true) =
+  var int local_number = 5;
+  print local_number; // works fine
+
+print local_number; // error, local_number doesn't exist here
+```
+
+Because a local variable disappears once its block ends, you can reuse the same name in another block that comes after it (this is very handy for loop counters).
+
+Example:
+
+```el
+for(var int i = 0; i < 5; i++) =
+  print i;
+
+for(var int i = 0; i < 3; i++) =
+  print i;
+// this works, the second "i" is a brand new variable
+```
+
+Unlike some other languages, EL does **not** support shadowing. If a name is already used by a variable in an outer/enclosing scope, you can't declare a new variable with that same name inside a nested block, even if you wanted to.
+
+Invalid example:
+
+```el
+var int score = 10;
+
+if(true) =
+  var int score = 20;
+  // error, "score" is already declared
+```
+
+A function's parameters and any variable declared inside it also follow local scope rules — see the Function section below.
+
+## Function
+
+Use `function` to create a reusable block of code that can be called by name.
+
+```el
+function function_name() =
+  // code
+```
+
+To run it, call it by its name:
+
+```el
+function_name();
+```
+
+Example:
+
+```el
+function say_hello() =
+  print "Hello!";
+
+say_hello();
+```
+
+#### Parameters
+
+A function can receive values through parameters. Every parameter must be declared with `var`, just like a normal variable, and supports every data type EL has (`int`, `float`, `str`, `bool`), including sized strings.
+
+```el
+function function_name(var int number, var float decimal, var str[16] text, var bool flag) =
+  // code
+```
+
+Example:
+
+```el
+function greet(var str[16] name) =
+  print name;
+
+greet("Delfin");
+```
+
+#### Return
+
+Use `return` to send a value back to whoever called the function. You don't need to declare a return type anywhere — EL figures it out automatically from whatever value your `return` statements use.
+
+```el
+function add(var int a, var int b) =
+  return a + b;
+
+print add(3, 4);
+// prints 7
+```
+
+Because a function call produces a value, you can use it directly anywhere a value is expected, including inside `if` conditions, math expressions, or as another function's argument.
+
+Example:
+
+```el
+function is_adult(var int age) =
+  return age >= 18;
+
+if(is_adult(20)) =
+  print "Allowed";
+```
+
+A `return` on its own (with no value) simply exits the function early, without producing anything usable.
+
+```el
+function check(var int n) =
+  if(n < 0) =
+    return;
+  print n;
+```
+
+#### Recursion
+
+A function is allowed to call itself, directly or through another function. Every call keeps its own separate copy of its parameters and local variables, so recursive calls never interfere with each other.
+
+Example:
+
+```el
+function factorial(var int n) =
+  if(n <= 1) =
+    return 1;
+  return n * factorial(n - 1);
+
+print factorial(5);
+// prints 120
+```
