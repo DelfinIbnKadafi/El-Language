@@ -1,0 +1,35 @@
+// all the comparison operators, should be straightforward
+var int x = 5;
+var int y = 10;
+
+if(x < y) =
+  print "x < y";
+if(x != y) =
+  print "x != y";
+if(x <= 5) =
+  print "x <= 5";
+
+// and/or/not, should combine conditions like most other languages
+if(x < y and y > 0) =
+  print "both true";
+
+if(x > y or y > 0) =
+  print "at least one true"; // second condition saves it
+
+// not reverses the condition, should print since x is not > y
+if(not (x > y)) =
+  print "x is not greater than y";
+
+// "not" actually binds tighter than "and"/"or", but it still wraps around
+// the whole comparison next to it -- so "not x > 5" reads as "not (x > 5)",
+// not "(not x) > 5". should behave the same either way you write it
+if(not x > y) =
+  print "x is not greater than y (written without parens)";
+
+// note: a bool variable can't be assigned a raw comparison result directly
+// (like "var bool b = x == y;"), you'd need an if/else to set it instead
+var bool isEqual = false;
+if(x == y) =
+  isEqual = true;
+if(not isEqual) =
+  print "x and y are different";

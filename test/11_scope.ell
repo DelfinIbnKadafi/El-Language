@@ -1,0 +1,27 @@
+// declared outside any block, so this one is global
+var int globalCount = 100;
+
+if(true) =
+  // this one only exists inside this if block
+  var int localValue = 5;
+  print localValue;
+  print globalCount; // global vars are visible from inside a block too
+
+print globalCount; // still works out here
+
+// local variables disappear once their block ends, so the same name
+// can be reused in another, separate block right after it
+if(true) =
+  var int reused = 1;
+  print reused;
+
+if(true) =
+  var int reused = 2; // this is a brand new variable, not the one above
+  print reused;
+
+// shadowing is NOT allowed though -- you can't redeclare a name that's
+// still visible from an outer scope. this part is commented out since
+// it should fail to compile:
+// var int dup = 1;
+// if(true) =
+//   var int dup = 2;

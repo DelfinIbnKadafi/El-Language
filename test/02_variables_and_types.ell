@@ -1,0 +1,19 @@
+// four basic data types: int, float, str, bool
+var int age = 21;
+var float price = 9.5;
+var str name = "Delfin";
+var bool isOnline = true;
+
+// should print each value as is
+print age;
+print price;
+print name;
+print isOnline;
+
+// int can widen into a float variable, this should print as a float (5)
+var float widened = 5;
+print widened;
+
+// no initial value given, gonna default to NONE instead of 0/empty
+var int empty;
+print empty;

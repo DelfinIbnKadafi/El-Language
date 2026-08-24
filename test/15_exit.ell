@@ -1,0 +1,6 @@
+// exit should stop the program right there, no argument needed
+print "this should print";
+exit;
+
+// this line should never run, the program already stopped above
+print "this should never print";

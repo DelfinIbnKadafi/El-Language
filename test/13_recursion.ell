@@ -1,0 +1,19 @@
+// a function is allowed to call itself, each call gets its own separate
+// copy of its parameters/local variables, so they shouldn't mix up
+function factorial(var int n) =
+  if(n <= 1) =
+    return 1;
+  return n * factorial(n - 1);
+
+print factorial(5); // should be 120
+
+// classic fibonacci, calls itself twice per step
+function fib(var int n) =
+  if(n <= 1) =
+    return n;
+  return fib(n - 1) + fib(n - 2);
+
+var int i = 0;
+while(i < 8) =
+  print fib(i);
+  i++;

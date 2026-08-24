@@ -1,0 +1,16 @@
+// basic math, should follow normal +-*/ precedence
+print 2 + 3 * 4; // multiplication first, should be 14 not 20
+
+var int a = 10;
+var int b = 3;
+
+print a / b; // both int, gonna do integer division -> 3
+print a * 1.0 / b; // one side is float, might give a decimal result
+
+// unary minus/plus should also work fine
+var int negative = -5;
+print negative;
+print -(a + b);
+
+// parentheses should override the usual precedence
+print (2 + 3) * 4; // should be 20 now

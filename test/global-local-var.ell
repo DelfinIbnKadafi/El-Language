@@ -1,7 +1,0 @@
-// global
-var int int_global = 0;
-
-// local
-if(int_global == 0) =
-  var int int_local = 10;
-  print int_global + int_local;

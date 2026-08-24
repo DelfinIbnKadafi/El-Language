@@ -1,0 +1,20 @@
+// basic for loop, should print 0 through 4
+for(var int i = 0; i < 5; i++) =
+  print i;
+
+// for loop clauses are optional, this one has no init/increment
+var int j = 0;
+for(; j < 3;) =
+  print j;
+  j++;
+
+// while loop, should print 3 down to 1
+var int n = 3;
+while(n > 0) =
+  print n;
+  n--;
+
+// loop counters are local to their own loop, so reusing "i" here is fine
+// (it doesn't clash with the "i" from the first loop above)
+for(var int i = 0; i < 2; i++) =
+  print i;

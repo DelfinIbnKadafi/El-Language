@@ -1,0 +1,38 @@
+// simplest possible function, no params, no return value
+function sayHi() =
+  print "hi from a function";
+
+sayHi();
+
+// parameters use "var" just like a normal variable declaration
+function add(var int a, var int b) =
+  return a + b;
+
+print add(3, 4); // should be 7
+
+// return type is inferred automatically, no need to declare it anywhere
+function isAdult(var int age) =
+  return age >= 18;
+
+// a function call can be used directly as an expression, even inside if
+if(isAdult(20)) =
+  print "allowed";
+
+// bare "return;" with no value just exits early, might act like NONE
+function checkPositive(var int n) =
+  if(n < 0) =
+    return;
+  print "n is fine";
+  return n;
+
+checkPositive(5);
+checkPositive(-1); // should skip the print, exits early instead
+
+// functions can also take string and bool parameters
+function greet(var str[16] name, var bool loud) =
+  if(loud) =
+    print name;
+  else =
+    print "quiet greeting";
+
+greet("Delfin", true);
