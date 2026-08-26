@@ -58,7 +58,18 @@ typedef enum {
   OP_RETURN,
   OP_PUSH_STRING_VALUE,
   OP_POP_STRING_VALUE,
-  OP_PRINT_STRING_VALUE
+  OP_PRINT_STRING_VALUE,
+  OP_DUP,
+  OP_DUP_STRING_VALUE,
+  OP_PUSH_ARR_ELEMENT_TO_STAGE,
+  OP_PUSH_STR_ARR_ELEMENT_TO_STAGE,
+  OP_RETURN_ARR,
+  OP_RETURN_STR_ARR,
+  OP_CAPTURE_RETURNED_ARR,
+  OP_CAPTURE_RETURNED_STR_ARR,
+  OP_INDEX_RETURNED_ARR,
+  OP_INDEX_RETURNED_STR_ARR,
+  OP_DISCARD_RETURNED_ARR
 } Opcode;
 
 // Supported variable types
@@ -164,6 +175,26 @@ typedef struct {
   // off the string-value stack. Used by OP_DECLARE_STR / OP_STORE_STR to bind
   // a string parameter, or to receive a function call's string return value.
   int sourceFromArgStack;
+  
+  // Instead of using stringLiteral/srcVarIndex/sourceFromArgStack, index
+  // straight into the array sitting on top of returnedArrStack (the index
+  // itself is already on the eval stack). Used when a call to an
+  // array-returning function is indexed directly, e.g. "s = buildArr()[0];".
+  int sourceFromReturnedArrIndex;
+  
+  // Array parameter binding mode, used by OP_DECLARE_INT/FLOAT/BOOL/STR when
+  // isArray is set and this declare is bound directly from a call's argument
+  // (i.e. it's a parameter, not a plain local array declaration). 0 = not a
+  // parameter bind; 1 = pop 'arraySize' values in order (list/variable-copy
+  // form, caller already pushed one per element); 2 = pop exactly one value
+  // and replicate it across every element (broadcast form).
+  int arrayBindMode;
+  
+  // Element index within the source array, used by OP_PUSH_ARR_ELEMENT_TO_STAGE
+  // / OP_PUSH_STR_ARR_ELEMENT_TO_STAGE to read one specific element of an
+  // existing array (rather than a runtime-popped index) when a caller passes
+  // an existing array variable as an argument.
+  int elementIndex;
 } Instruction;
 
 // Execute bytecode

@@ -47,6 +47,8 @@ typedef struct {
   VarType type;
   
   int isArray;
+  int arraySize; // meaningful only when isArray is true
+  int strSize;   // meaningful only when type is VAR_STR (0 means "default max")
   
   // True if this variable is local to the function currently being parsed
   // (a parameter, or a var declared anywhere in its body) rather than global.
@@ -114,11 +116,25 @@ typedef struct {
   int paramVarIndex[MAX_PARAMS];
   int paramStrSize[MAX_PARAMS];
   
+  // Array parameters only. paramIsArray[i] marks whether parameter i is an
+  // array (rather than scalar); paramArraySize[i] is its required size, set
+  // in the signature just like a normal array declaration.
+  int paramIsArray[MAX_PARAMS];
+  int paramArraySize[MAX_PARAMS];
+  
   // Meaningful only when hasReturnValue is true. Inferred from the function's
   // own 'return' statements (int/float widen like everywhere else in this
   // language; bool/str must match every other typed return exactly).
   VarType returnType;
   int hasReturnValue;
+  
+  // True if this function returns an array rather than a scalar. Size/element
+  // type (returnType/returnStrSize) are taken from whichever array variable
+  // the first 'return' statement returns; every later 'return' must return an
+  // array of that exact same size and type.
+  int returnsArray;
+  int returnArraySize;
+  int returnStrSize;
   
   // Bytecode index of the function's first real instruction, right after its
   // parameter-binding declares. Known before the body is parsed, so a
@@ -158,7 +174,7 @@ int FindFunction(char* name) {
 }
 
 // Register new variable, error if name already declared
-int DeclareSymbol(char* name, VarType type, int isArray, int line) {
+int DeclareSymbol(char* name, VarType type, int isArray, int arraySize, int strSize, int line) {
   if(FindSymbol(name) != -1) {
     CompileError(line, "Variable '%s' already declared", name);
   }
@@ -172,6 +188,8 @@ int DeclareSymbol(char* name, VarType type, int isArray, int line) {
   
   symbols[symbolCount].type = type;
   symbols[symbolCount].isArray = isArray;
+  symbols[symbolCount].arraySize = arraySize;
+  symbols[symbolCount].strSize = strSize;
   symbols[symbolCount].isLocal = insideFunctionBody;
   
   return symbolCount++;
@@ -222,6 +240,13 @@ typedef struct {
   // using literal/srcVarIndex.
   int sourceFromArgStack;
   
+  // True if this value came from indexing an array-returning function call
+  // directly (e.g. buildArr()[0]) -- the array temporarily sits on
+  // returnedArrStack, with the index already sitting on the eval stack right
+  // before this value is consumed. Consumers must emit
+  // OP_INDEX_RETURNED_STR_ARR instead of using literal/srcVarIndex/sourceFromArgStack.
+  int sourceFromReturnedArrIndex;
+  
   // True if the value was literally the NONE keyword
   int isNoneLiteral;
 } StringResult;
@@ -263,6 +288,7 @@ Token ParseIdentifierStatement(Token token, TokenType terminator);
 StringResult ParseStringValue(Token token);
 BoolResult ParseBoolValue(Token token);
 FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken);
+Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, Token token);
 
 // Parse an optional array index following an identifier that resolves to symbol
 // 'symbolIndex'. 'nameToken' identifies the variable for error messages, and
@@ -298,6 +324,185 @@ Token ParseArrayIndex(int symbolIndex, Token nameToken, Token afterName) {
   return afterName;
 }
 
+// Parse one array-typed argument to a function call, in any of its three
+// forms, and emit the bytecode to stage exactly 'paramArraySize' values
+// (one push per element, in order) for the callee's array parameter declare
+// to pop back out -- see ParseParameterList/OP_DECLARE_* for the other half.
+//   - list literal:       func([1, 2, 3])  -- element count must match exactly
+//   - broadcast:          func(10)         -- one value, repeated for every element
+//   - existing variable:  func(myArr)      -- must be an array of the same
+//                                             size and element type
+Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, Token token) {
+  VarType paramType = func->paramTypes[argIndex];
+  int paramSize = func->paramArraySize[argIndex];
+  
+  if(token.type == TOKEN_LBRACKET) {
+    // List literal form: one value per element, must match the parameter's
+    // declared size exactly (no partial-fill-with-NONE here, unlike a normal
+    // "var int arr[5] = {1,2};" initializer -- every element needs a real
+    // value to pass into the function).
+    Token itemToken = LexerNext();
+    int count = 0;
+    
+    if(itemToken.type != TOKEN_RBRACKET) {
+      while(1) {
+        if(count >= paramSize) {
+          CompileError(nameToken.line, "Too many values for array parameter %d of function '%s' (expected %d)", argIndex + 1, func->name, paramSize);
+        }
+        
+        if(paramType == VAR_STR) {
+          StringResult value = ParseStringValue(itemToken);
+          
+          Instruction push = {0};
+          
+          push.opcode = OP_PUSH_STRING_VALUE;
+          push.storeNone = value.isNoneLiteral;
+          push.srcVarIndex = value.srcVarIndex;
+          push.srcIsArray = value.srcIsArray;
+          push.srcIsLocal = value.srcIsLocal;
+          push.line = nameToken.line;
+          
+          strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
+          push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+          
+          EmitInstruction(push);
+          
+          itemToken = value.next;
+        } else if(paramType == VAR_BOOL) {
+          BoolResult value = ParseBoolValue(itemToken);
+          
+          itemToken = value.next;
+        } else {
+          ExprResult value = ParseNumericExpression(itemToken);
+          
+          if(paramType == VAR_INT && value.type == VAR_FLOAT) {
+            CompileError(nameToken.line, "Cannot use a float value in int array parameter %d of function '%s'", argIndex + 1, func->name);
+          }
+          
+          itemToken = value.next;
+        }
+        
+        count++;
+        
+        if(itemToken.type == TOKEN_COMMA) {
+          itemToken = LexerNext();
+          continue;
+        }
+        
+        break;
+      }
+    }
+    
+    if(count != paramSize) {
+      CompileError(nameToken.line, "Array parameter %d of function '%s' expects exactly %d values, got %d", argIndex + 1, func->name, paramSize, count);
+    }
+    
+    if(itemToken.type != TOKEN_RBRACKET) {
+      CompileError(itemToken.line, "Expected ]");
+    }
+    
+    // Elements were pushed in order (element 0 first); the callee's declare
+    // pops them back out in reverse, so element 0 ends up on top last,
+    // matching how the callee expects to unwind them.
+    return LexerNext();
+  }
+  
+  if(token.type == TOKEN_IDENTIFIER) {
+    int index = FindSymbol(token.value);
+    
+    if(index != -1 && symbols[index].isArray) {
+      // Existing array variable form: copy its elements across, one push
+      // per element, reading directly from the source array at each fixed
+      // position (known at compile time, no runtime index needed).
+      if(symbols[index].type != paramType) {
+        CompileError(token.line, "Array argument %d of function '%s' has the wrong element type", argIndex + 1, func->name);
+      }
+      
+      if(symbols[index].arraySize != paramSize) {
+        CompileError(token.line, "Array argument %d of function '%s' must have exactly %d elements (variable '%s' has %d)", argIndex + 1, func->name, paramSize, token.value, symbols[index].arraySize);
+      }
+      
+      for(int i = 0; i < paramSize; i++) {
+        Instruction push = {0};
+        
+        push.opcode = (paramType == VAR_STR) ? OP_PUSH_STR_ARR_ELEMENT_TO_STAGE : OP_PUSH_ARR_ELEMENT_TO_STAGE;
+        push.varIndex = index;
+        push.isLocal = symbols[index].isLocal;
+        push.elementIndex = i;
+        push.line = nameToken.line;
+        
+        EmitInstruction(push);
+      }
+      
+      return LexerNext();
+    }
+  }
+  
+  // Broadcast form: one value, expanded to 'paramSize' identical pushes.
+  // The expression is evaluated once and duplicated, rather than
+  // re-evaluated paramSize times (matters if it were ever a function call).
+  if(paramType == VAR_STR) {
+    StringResult value = ParseStringValue(token);
+    
+    Instruction push = {0};
+    
+    push.opcode = OP_PUSH_STRING_VALUE;
+    push.storeNone = value.isNoneLiteral;
+    push.srcVarIndex = value.srcVarIndex;
+    push.srcIsArray = value.srcIsArray;
+    push.srcIsLocal = value.srcIsLocal;
+    push.line = nameToken.line;
+    
+    strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
+    push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    
+    EmitInstruction(push);
+    
+    for(int i = 1; i < paramSize; i++) {
+      Instruction dup = {0};
+      
+      dup.opcode = OP_DUP_STRING_VALUE;
+      dup.line = nameToken.line;
+      
+      EmitInstruction(dup);
+    }
+    
+    return value.next;
+  }
+  
+  if(paramType == VAR_BOOL) {
+    BoolResult value = ParseBoolValue(token);
+    
+    for(int i = 1; i < paramSize; i++) {
+      Instruction dup = {0};
+      
+      dup.opcode = OP_DUP;
+      dup.line = nameToken.line;
+      
+      EmitInstruction(dup);
+    }
+    
+    return value.next;
+  }
+  
+  ExprResult value = ParseNumericExpression(token);
+  
+  if(paramType == VAR_INT && value.type == VAR_FLOAT) {
+    CompileError(nameToken.line, "Cannot use a float value in int array parameter %d of function '%s'", argIndex + 1, func->name);
+  }
+  
+  for(int i = 1; i < paramSize; i++) {
+    Instruction dup = {0};
+    
+    dup.opcode = OP_DUP;
+    dup.line = nameToken.line;
+    
+    EmitInstruction(dup);
+  }
+  
+  return value.next;
+}
+
 // Parse the parenthesized argument list of a call to function 'funcIndex'
 // (already resolved by the caller), whose opening '(' has already been
 // consumed. Parses one expression per parameter, checked against its
@@ -321,7 +526,9 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
       
       VarType paramType = func->paramTypes[argIndex];
       
-      if(paramType == VAR_STR) {
+      if(func->paramIsArray[argIndex]) {
+        token = ParseArrayArgument(func, argIndex, nameToken, token);
+      } else if(paramType == VAR_STR) {
         StringResult value = ParseStringValue(token);
         
         Instruction push = {0};
@@ -416,6 +623,43 @@ ExprResult ParseNumericIdentifier(Token token, Token afterName) {
     }
     
     FunctionSymbol* func = &functionSymbols[funcIndex];
+    
+    if(func->hasReturnValue && func->returnsArray) {
+      // Array-returning function used directly as a value: only valid when
+      // immediately indexed, e.g. "buildArray()[0]" -- there's no way to use
+      // a whole array as a plain numeric value otherwise.
+      if(func->returnType == VAR_STR) {
+        CompileError(token.line, "Function '%s' returns a string array, not a numeric/bool value", token.value);
+      }
+      
+      FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
+      
+      if(call.next.type != TOKEN_LBRACKET) {
+        CompileError(call.next.line, "Function '%s' returns an array and must be indexed, e.g. %s()[0]", token.value, token.value);
+      }
+      
+      ExprResult idxExpr = ParseNumericExpression(LexerNext());
+      
+      if(idxExpr.type != VAR_INT) {
+        CompileError(token.line, "Array index must be an int");
+      }
+      
+      if(idxExpr.next.type != TOKEN_RBRACKET) {
+        CompileError(idxExpr.next.line, "Expected ]");
+      }
+      
+      Instruction indexInstr = {0};
+      
+      indexInstr.opcode = OP_INDEX_RETURNED_ARR;
+      indexInstr.line = token.line;
+      
+      EmitInstruction(indexInstr);
+      
+      result.next = LexerNext();
+      result.type = func->returnType;
+      
+      return result;
+    }
     
     if(!func->hasReturnValue || func->returnType == VAR_STR) {
       CompileError(token.line, "Function '%s' does not return a numeric/bool value", token.value);
@@ -647,7 +891,37 @@ StringResult ParseStringValue(Token token) {
         CompileError(token.line, "Undefined function \"%s\"", token.value);
       }
       
-      if(!functionSymbols[funcIndex].hasReturnValue || functionSymbols[funcIndex].returnType != VAR_STR) {
+      FunctionSymbol* func = &functionSymbols[funcIndex];
+      
+      if(func->hasReturnValue && func->returnsArray) {
+        if(func->returnType != VAR_STR) {
+          CompileError(token.line, "Function '%s' does not return a string value", token.value);
+        }
+        
+        FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
+        
+        if(call.next.type != TOKEN_LBRACKET) {
+          CompileError(call.next.line, "Function '%s' returns an array and must be indexed, e.g. %s()[0]", token.value, token.value);
+        }
+        
+        ExprResult idxExpr = ParseNumericExpression(LexerNext());
+        
+        if(idxExpr.type != VAR_INT) {
+          CompileError(token.line, "Array index must be an int");
+        }
+        
+        if(idxExpr.next.type != TOKEN_RBRACKET) {
+          CompileError(idxExpr.next.line, "Expected ]");
+        }
+        
+        result.next = LexerNext();
+        result.srcVarIndex = -1;
+        result.sourceFromReturnedArrIndex = 1;
+        
+        return result;
+      }
+      
+      if(!func->hasReturnValue || func->returnType != VAR_STR) {
         CompileError(token.line, "Function '%s' does not return a string value", token.value);
       }
       
@@ -1296,6 +1570,7 @@ Token EmitElementStore(VarType varType, int varIndex, int destIsLocal, Token val
     store.srcIsArray = value.srcIsArray;
     store.srcIsLocal = value.srcIsLocal;
     store.sourceFromArgStack = value.sourceFromArgStack;
+    store.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     store.line = valueToken.line;
     
     strncpy(store.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -1460,7 +1735,7 @@ Token ParseVarDeclaration() {
   }
   
   if(isArray) {
-    int index = DeclareSymbol(name.value, varType, 1, name.line);
+    int index = DeclareSymbol(name.value, varType, 1, arraySize, strSize, name.line);
     
     Instruction declareInstr = {0};
     
@@ -1488,6 +1763,57 @@ Token ParseVarDeclaration() {
     }
     
     Token afterAssign = LexerNext();
+    
+    // Function call returning an array, used directly as the initializer:
+    // "var int result[5] = buildArray();" -- the declare above already gave
+    // this variable its own fresh storage, so all that's left is to adopt
+    // the returned array's contents into it.
+    if(afterAssign.type == TOKEN_IDENTIFIER) {
+      Token afterCallName = LexerNext();
+      
+      if(afterCallName.type == TOKEN_LPAREN) {
+        int funcIndex = FindFunction(afterAssign.value);
+        
+        if(funcIndex == -1) {
+          CompileError(afterAssign.line, "Undefined function \"%s\"", afterAssign.value);
+        }
+        
+        FunctionSymbol* callee = &functionSymbols[funcIndex];
+        
+        if(!callee->hasReturnValue || !callee->returnsArray) {
+          CompileError(afterAssign.line, "Function '%s' does not return an array", afterAssign.value);
+        }
+        
+        if(callee->returnType != varType || callee->returnArraySize != arraySize) {
+          CompileError(afterAssign.line, "Function '%s' returns an array of a different type or size", afterAssign.value);
+        }
+        
+        FunctionCallResult call = ParseFunctionCallArgs(funcIndex, afterAssign);
+        
+        if(call.next.type != TOKEN_SEMICOLON) {
+          CompileError(call.next.line, "Expected ;");
+        }
+        
+        Instruction capture = {0};
+        
+        capture.opcode = (varType == VAR_STR) ? OP_CAPTURE_RETURNED_STR_ARR : OP_CAPTURE_RETURNED_ARR;
+        capture.varIndex = index;
+        capture.isLocal = symbols[index].isLocal;
+        capture.line = afterAssign.line;
+        
+        EmitInstruction(capture);
+        
+        return LexerNext();
+      }
+      
+      // Not a call after all (e.g. a plain identifier isn't valid here, but
+      // let the normal error paths below handle it); afterCallName was
+      // consumed either way, so fall through using it as the next token to
+      // parse against. Only the list/broadcast forms are valid past this
+      // point, and neither starts with a bare identifier, so this will
+      // correctly fail with a clear error rather than silently doing nothing.
+      afterAssign = afterCallName;
+    }
     
     if(afterAssign.type == TOKEN_LBRACE) {
       // List form: { v1, v2, ..., vn }, applied in order starting at index 0.
@@ -1546,6 +1872,7 @@ Token ParseVarDeclaration() {
       broadcast.srcIsArray = value.srcIsArray;
       broadcast.srcIsLocal = value.srcIsLocal;
       broadcast.sourceFromArgStack = value.sourceFromArgStack;
+      broadcast.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
       broadcast.line = afterAssign.line;
       
       strncpy(broadcast.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -1622,11 +1949,10 @@ Token ParseVarDeclaration() {
       CompileError(value.next.line, "Expected ;");
     }
     
-    int index = DeclareSymbol(name.value, varType, 0, name.line);
+    int index = DeclareSymbol(name.value, varType, 0, 1, strSize, name.line);
     
     Instruction instruction = {0};
     
-    instruction.opcode = OP_DECLARE_STR;
     instruction.varIndex = index;
     instruction.isLocal = symbols[index].isLocal;
     instruction.strSize = strSize;
@@ -1635,6 +1961,7 @@ Token ParseVarDeclaration() {
     instruction.srcIsArray = value.srcIsArray;
     instruction.srcIsLocal = value.srcIsLocal;
     instruction.sourceFromArgStack = value.sourceFromArgStack;
+    instruction.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     
     strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
     instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
@@ -1672,7 +1999,7 @@ Token ParseVarDeclaration() {
       CompileError(nextAfter.line, "Expected ;");
     }
     
-    int index = DeclareSymbol(name.value, varType, 0, name.line);
+    int index = DeclareSymbol(name.value, varType, 0, 1, 0, name.line);
     
     Instruction instruction = {0};
     
@@ -1726,7 +2053,7 @@ Token ParseVarDeclaration() {
     CompileError(nextAfter.line, "Expected ;");
   }
   
-  int index = DeclareSymbol(name.value, varType, 0, name.line);
+  int index = DeclareSymbol(name.value, varType, 0, 1, 0, name.line);
   
   Instruction instruction = {0};
   
@@ -1958,10 +2285,12 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
     instruction.varIndex = index;
     instruction.isLocal = destIsLocal;
     instruction.destIsArray = isIndexed;
+    instruction.storeNone = value.isNoneLiteral;
     instruction.srcVarIndex = value.srcVarIndex;
     instruction.srcIsArray = value.srcIsArray;
     instruction.srcIsLocal = value.srcIsLocal;
     instruction.sourceFromArgStack = value.sourceFromArgStack;
+    instruction.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     instruction.line = token.line;
     
     strncpy(instruction.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -2099,6 +2428,67 @@ Token ParsePrintStatement() {
       
       if(!func->hasReturnValue) {
         CompileError(value.line, "Function '%s' does not return a value", value.value);
+      }
+      
+      if(func->returnsArray) {
+        // Array-returning function: only valid here when immediately
+        // indexed, e.g. "print buildArray()[0];" -- there's nothing sensible
+        // to print for a whole array at once.
+        FunctionCallResult call = ParseFunctionCallArgs(funcIndex, value);
+        
+        if(call.next.type != TOKEN_LBRACKET) {
+          CompileError(call.next.line, "Function '%s' returns an array and must be indexed, e.g. %s()[0]", value.value, value.value);
+        }
+        
+        ExprResult idxExpr = ParseNumericExpression(LexerNext());
+        
+        if(idxExpr.type != VAR_INT) {
+          CompileError(value.line, "Array index must be an int");
+        }
+        
+        if(idxExpr.next.type != TOKEN_RBRACKET) {
+          CompileError(idxExpr.next.line, "Expected ]");
+        }
+        
+        Token semicolon = LexerNext();
+        
+        if(semicolon.type != TOKEN_SEMICOLON) {
+          CompileError(semicolon.line, "Expected ;");
+        }
+        
+        if(func->returnType == VAR_STR) {
+          Instruction indexInstr = {0};
+          
+          indexInstr.opcode = OP_INDEX_RETURNED_STR_ARR;
+          indexInstr.line = value.line;
+          
+          EmitInstruction(indexInstr);
+          
+          Instruction printInstruction = {0};
+          
+          printInstruction.opcode = OP_PRINT_STRING_VALUE;
+          printInstruction.line = value.line;
+          
+          EmitInstruction(printInstruction);
+        } else {
+          Instruction indexInstr = {0};
+          
+          indexInstr.opcode = OP_INDEX_RETURNED_ARR;
+          indexInstr.line = value.line;
+          
+          EmitInstruction(indexInstr);
+          
+          Instruction printInstruction = {0};
+          
+          printInstruction.opcode = OP_PRINT_VALUE;
+          printInstruction.valueType = func->returnType;
+          printInstruction.propagateNone = 1;
+          printInstruction.line = value.line;
+          
+          EmitInstruction(printInstruction);
+        }
+        
+        return LexerNext();
       }
       
       FunctionCallResult call = ParseFunctionCallArgs(funcIndex, value);
@@ -2290,19 +2680,45 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
       CompileError(name.line, "Too many parameters (max %d)", MAX_PARAMS);
     }
     
-    // Arrays are not supported as parameters yet
-    int index = DeclareSymbol(name.value, paramType, 0, name.line);
+    // Optional "[size]" right after the name marks this as an array
+    // parameter, same ordering as a normal array declaration.
+    Token afterName = LexerNext();
+    int isArrayParam = 0;
+    int arraySize = 0;
+    
+    if(afterName.type == TOKEN_LBRACKET) {
+      Token sizeToken = LexerNext();
+      
+      if(sizeToken.type != TOKEN_LIT_NUMBER) {
+        CompileError(sizeToken.line, "Expected array size");
+      }
+      
+      arraySize = ParsePositiveSize(sizeToken, "Array size");
+      
+      Token closeBracket = LexerNext();
+      
+      if(closeBracket.type != TOKEN_RBRACKET) {
+        CompileError(closeBracket.line, "Expected ]");
+      }
+      
+      isArrayParam = 1;
+      afterName = LexerNext();
+    }
+    
+    int index = DeclareSymbol(name.value, paramType, isArrayParam, isArrayParam ? arraySize : 1, strSize, name.line);
     
     func->paramTypes[func->paramCount] = paramType;
     func->paramVarIndex[func->paramCount] = index;
     func->paramStrSize[func->paramCount] = strSize;
+    func->paramIsArray[func->paramCount] = isArrayParam;
+    func->paramArraySize[func->paramCount] = arraySize;
     
     names[func->paramCount] = name;
     strSizes[func->paramCount] = strSize;
     
     func->paramCount++;
     
-    Token afterParam = LexerNext();
+    Token afterParam = afterName;
     
     if(afterParam.type == TOKEN_COMMA) {
       token = LexerNext();
@@ -2328,7 +2744,15 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
     declareInstr.strSize = strSizes[i];
     declareInstr.line = names[i].line;
     
-    if(func->paramTypes[i] == VAR_STR) {
+    if(func->paramIsArray[i]) {
+      declareInstr.isArray = 1;
+      declareInstr.arraySize = func->paramArraySize[i];
+      // Every call site (list literal, broadcast, or existing-array form)
+      // stages exactly 'arraySize' values in order before the call, whatever
+      // form was actually written -- see ParseArrayArgument. This declare
+      // just always pops that many values back out.
+      declareInstr.arrayBindMode = 1;
+    } else if(func->paramTypes[i] == VAR_STR) {
       declareInstr.sourceFromArgStack = 1;
       declareInstr.srcVarIndex = -1;
     }
@@ -2406,31 +2830,41 @@ Token ParseFunctionDefinition(Token functionToken) {
   
   Token afterBlock = ParseBlock(LexerNext(), functionToken.column, afterParams.line);
   
-  // Implicit 'return NONE;' in case a code path falls off the end of the
-  // body without an explicit return.
-  Instruction implicitReturn = {0};
-  
-  implicitReturn.opcode = OP_RETURN;
-  implicitReturn.line = afterParams.line;
-  
-  if(func->hasReturnValue) {
-    Instruction pushNone = {0};
+  // A function returning an array must return one on every path -- there's
+  // no such thing as an "array NONE" to fall back on implicitly.
+  if(func->hasReturnValue && func->returnsArray) {
+    Instruction lastInstr = bytecode[bytecodeCount - 1];
     
-    pushNone.line = afterParams.line;
+    if(lastInstr.opcode != OP_RETURN_ARR && lastInstr.opcode != OP_RETURN_STR_ARR) {
+      CompileError(afterParams.line, "Function '%s' returns an array but might not return one on every path", func->name);
+    }
+  } else {
+    // Implicit 'return NONE;' in case a code path falls off the end of the
+    // body without an explicit return.
+    Instruction implicitReturn = {0};
     
-    if(func->returnType == VAR_STR) {
-      pushNone.opcode = OP_PUSH_STRING_VALUE;
-      pushNone.storeNone = 1;
-    } else {
-      pushNone.opcode = OP_PUSH_NUMBER;
-      pushNone.numberValue = 0;
-      pushNone.storeNone = 1;
+    implicitReturn.opcode = OP_RETURN;
+    implicitReturn.line = afterParams.line;
+    
+    if(func->hasReturnValue) {
+      Instruction pushNone = {0};
+      
+      pushNone.line = afterParams.line;
+      
+      if(func->returnType == VAR_STR) {
+        pushNone.opcode = OP_PUSH_STRING_VALUE;
+        pushNone.storeNone = 1;
+      } else {
+        pushNone.opcode = OP_PUSH_NUMBER;
+        pushNone.numberValue = 0;
+        pushNone.storeNone = 1;
+      }
+      
+      EmitInstruction(pushNone);
     }
     
-    EmitInstruction(pushNone);
+    EmitInstruction(implicitReturn);
   }
-  
-  EmitInstruction(implicitReturn);
   
   PopScope();
   
@@ -2498,6 +2932,10 @@ Token ParseReturnStatement(Token returnToken) {
   }
   
   if(isBareNoneReturn) {
+    if(func->hasReturnValue && func->returnsArray) {
+      CompileError(returnToken.line, "Function '%s' returns an array and cannot use a bare 'return;'", func->name);
+    }
+    
     Instruction pushValue = {0};
     
     pushValue.line = returnToken.line;
@@ -2547,6 +2985,47 @@ Token ParseReturnStatement(Token returnToken) {
     isFunctionCallLookingAtLparen = (afterName.type == TOKEN_LPAREN);
   }
   
+  // "return someArray;" -- a bare array variable, not indexed. If it were
+  // indexed ("return arr[0];") that's just a normal scalar return instead,
+  // handled by the regular paths below.
+  if(afterReturn.type == TOKEN_IDENTIFIER && !isFunctionCallLookingAtLparen &&
+     afterName.type != TOKEN_LBRACKET) {
+    int index = FindSymbol(afterReturn.value);
+    
+    if(index != -1 && symbols[index].isArray) {
+      if(func->hasReturnValue && !func->returnsArray) {
+        CompileError(returnToken.line, "Function '%s' returns inconsistent types", func->name);
+      }
+      
+      if(func->returnsArray) {
+        if(symbols[index].type != func->returnType || symbols[index].arraySize != func->returnArraySize) {
+          CompileError(returnToken.line, "Function '%s' must always return an array of the same type and size", func->name);
+        }
+      } else {
+        func->hasReturnValue = 1;
+        func->returnsArray = 1;
+        func->returnType = symbols[index].type;
+        func->returnArraySize = symbols[index].arraySize;
+        func->returnStrSize = symbols[index].strSize;
+      }
+      
+      if(afterName.type != TOKEN_SEMICOLON) {
+        CompileError(afterName.line, "Expected ;");
+      }
+      
+      Instruction ret = {0};
+      
+      ret.opcode = (symbols[index].type == VAR_STR) ? OP_RETURN_STR_ARR : OP_RETURN_ARR;
+      ret.varIndex = index;
+      ret.isLocal = symbols[index].isLocal;
+      ret.line = returnToken.line;
+      
+      EmitInstruction(ret);
+      
+      return LexerNext();
+    }
+  }
+  
   int isStringReturn =
     afterReturn.type == TOKEN_LIT_STRING ||
     (afterReturn.type == TOKEN_IDENTIFIER && !isFunctionCallLookingAtLparen &&
@@ -2585,7 +3064,7 @@ Token ParseReturnStatement(Token returnToken) {
     if(!func->hasReturnValue) {
       func->hasReturnValue = 1;
       func->returnType = VAR_STR;
-    } else if(func->returnType != VAR_STR) {
+    } else if(func->returnsArray || func->returnType != VAR_STR) {
       CompileError(returnToken.line, "Function '%s' returns inconsistent types", func->name);
     }
     
@@ -2597,6 +3076,7 @@ Token ParseReturnStatement(Token returnToken) {
     pushValue.srcIsArray = value.srcIsArray;
     pushValue.srcIsLocal = value.srcIsLocal;
     pushValue.sourceFromArgStack = value.sourceFromArgStack;
+    pushValue.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     pushValue.line = returnToken.line;
     
     strncpy(pushValue.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -2687,6 +3167,8 @@ Token ParseReturnStatement(Token returnToken) {
     if(!func->hasReturnValue) {
       func->hasReturnValue = 1;
       func->returnType = returnedType;
+    } else if(func->returnsArray) {
+      CompileError(returnToken.line, "Function '%s' returns inconsistent types", func->name);
     } else if(func->returnType == VAR_INT && returnedType == VAR_FLOAT) {
       func->returnType = VAR_FLOAT;
     } else if(func->returnType == VAR_FLOAT && returnedType == VAR_INT) {

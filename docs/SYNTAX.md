@@ -499,6 +499,59 @@ function greet(var str[16] name) =
 greet("Delfin");
 ```
 
+#### Array Parameters
+
+Functions can receive arrays as parameters. The array size must be explicitly declared in the parameter.
+
+```el
+function function_name(var data_type name[size]) =
+  // code
+```
+
+Example:
+
+```el
+function sum(var int arr[3]) =
+  return arr[0] + arr[1] + arr[2];
+
+print sum([1, 2, 3]);
+// prints
+```
+
+An array parameter can receive:
+
+A list literal with the exact same size:
+
+```el
+sum([1, 2, 3]);
+```
+
+A single value, which is broadcast to every index:
+
+```el
+sum(10);
+// arr becomes {10, 10, 10}
+```
+
+An existing array variable:
+
+```el
+var int numbers[3] = {1, 2, 3};
+
+sum(numbers);
+```
+
+Array parameters are passed by value, so modifying the parameter does not modify the original array.
+
+The list size must match the parameter size. A mismatched list produces a compile-time error.
+
+Sized-string arrays are also supported:
+
+```el
+function print_names(var str[16] labels[3]) =
+  print labels[0];
+```
+
 #### Return
 
 Use `return` to send a value back to whoever called the function. You don't need to declare a return type anywhere — EL figures it out automatically from whatever value your `return` statements use.
@@ -530,6 +583,51 @@ function check(var int n) =
   if(n < 0) =
     return;
   print n;
+```
+
+#### Return Arrays
+
+A function can return an array.
+
+```el
+function function_name() =
+  var int result[3] = {10, 20, 30};
+  return result;
+```
+
+The returned array can be assigned to an array variable:
+
+```el
+var int numbers[3] = function_name();
+```
+
+It can also be indexed directly:
+
+```el
+print function_name()[0];
+// prints 10
+```
+
+The returned array must have a consistent data type and size across every return statement.
+
+A function returning an array must return an array on every possible execution path. A bare return; is not allowed in such a function.
+
+Example:
+
+```el
+function create_numbers() =
+  var int result[3] = {1, 2, 3};
+  return result;
+```
+
+Array return values also support sized strings:
+
+```el
+function create_names() =
+  var str[16] names[3] = {"Alice", "Bob", "Charlie"};
+  return names;
+
+print create_names()[0];
 ```
 
 #### Recursion

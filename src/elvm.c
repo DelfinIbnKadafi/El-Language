@@ -50,6 +50,17 @@ char stringValueStack[MAX_STRING_STACK][INSTRUCTION_MAX_LEN];
 int stringValueStackIsNone[MAX_STRING_STACK];
 int stringValueStackTop = 0;
 
+// Holds an array a function just returned, until whatever the caller does
+// with it (assign into a real variable, index once, or ignore it) consumes
+// it. A real stack, not a single slot, so a returned array used as part of
+// preparing another call (or another array return) nests correctly, the same
+// reasoning as stringValueStack above. Each entry owns its own storage and
+// is always freed by whichever opcode consumes it.
+#define MAX_RETURNED_ARR_STACK 64
+
+Variable* returnedArrStack[MAX_RETURNED_ARR_STACK];
+int returnedArrStackTop = 0;
+
 // Evaluation stack, used for numeric expression math (int, float, bool, comparisons, indices)
 double stack[MAX_STACK];
 int stackTop = 0;
@@ -224,6 +235,22 @@ void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* ou
     return;
   }
   
+  if(instruction.sourceFromReturnedArrIndex) {
+    returnedArrStackTop--;
+    Variable* src = returnedArrStack[returnedArrStackTop];
+    
+    int idx = CheckBounds(Pop(), src->arraySize, instruction.line);
+    
+    strncpy(out, src->strings[idx], outSize);
+    out[outSize] = '\0';
+    
+    *outIsNone = src->isNone[idx];
+    
+    FreeVariableStorage(src);
+    free(src);
+    return;
+  }
+  
   if(instruction.srcVarIndex == -1) {
     strncpy(out, instruction.stringLiteral, outSize);
     out[outSize] = '\0';
@@ -371,10 +398,22 @@ void VMRun(Instruction* code, int count, char* filename) {
         AllocateNumberStorage(v, size, instruction.line);
         
         if(instruction.isArray) {
-          // Every element starts as NONE; a broadcast/list initializer, if any,
-          // is applied afterward through separate instructions
-          for(int i = 0; i < size; i++) {
-            v->isNone[i] = 1;
+          if(instruction.arrayBindMode) {
+            // Parameter bind: caller has already pushed exactly one value
+            // per element, in order (a broadcast-style call expands to N
+            // identical pushes on the caller's side -- see
+            // ParseFunctionCallArgs). Pop them back out in reverse so
+            // element 0 ends up with the first value that was pushed.
+            for(int i = size - 1; i >= 0; i--) {
+              v->numbers[i] = Pop();
+              v->isNone[i] = lastPushedIsNone;
+            }
+          } else {
+            // Every element starts as NONE; a broadcast/list initializer, if
+            // any, is applied afterward through separate instructions
+            for(int i = 0; i < size; i++) {
+              v->isNone[i] = 1;
+            }
           }
         } else if(instruction.storeNone) {
           v->isNone[0] = 1;
@@ -409,10 +448,24 @@ void VMRun(Instruction* code, int count, char* filename) {
         AllocateStringStorage(v, size, strSize, instruction.line);
         
         if(instruction.isArray) {
-          // Every element starts as NONE; a broadcast/list initializer, if any,
-          // is applied afterward through separate instructions
-          for(int i = 0; i < size; i++) {
-            v->isNone[i] = 1;
+          if(instruction.arrayBindMode) {
+            // Parameter bind: caller has already pushed exactly one string
+            // per element, in order (a broadcast-style call expands to N
+            // identical pushes on the caller's side). Pop them back out in
+            // reverse so element 0 ends up with the first one pushed.
+            for(int i = size - 1; i >= 0; i--) {
+              stringValueStackTop--;
+              
+              strncpy(v->strings[i], stringValueStack[stringValueStackTop], strSize);
+              v->strings[i][strSize] = '\0';
+              v->isNone[i] = stringValueStackIsNone[stringValueStackTop];
+            }
+          } else {
+            // Every element starts as NONE; a broadcast/list initializer, if
+            // any, is applied afterward through separate instructions
+            for(int i = 0; i < size; i++) {
+              v->isNone[i] = 1;
+            }
           }
         } else if(instruction.storeNone) {
           v->isNone[0] = 1;
@@ -695,6 +748,17 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_POP:
         Pop();
         break;
+      case OP_DUP: {
+        // Duplicate the top of the eval stack without consuming it -- used
+        // to replicate a once-evaluated broadcast value across every slot
+        // of an array parameter, without re-evaluating the expression.
+        double top = stack[stackTop - 1];
+        int wasNone = lastPushedIsNone;
+        
+        Push(top);
+        lastPushedIsNone = wasNone;
+        break;
+      }
       case OP_PUSH_LAST_NONE_FLAG: {
         int result = lastPushedIsNone;
         
@@ -726,6 +790,119 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_RETURN:
         ip = PopCallFrame();
         break;
+      case OP_RETURN_ARR:
+      case OP_RETURN_STR_ARR: {
+        // Copy the local array being returned into its own independent
+        // buffer BEFORE the call frame is torn down (the local's own storage
+        // gets freed as part of that), then hand the buffer to the caller
+        // through returnedArrStack. Whoever consumes it on the caller side
+        // is responsible for freeing it.
+        if(returnedArrStackTop >= MAX_RETURNED_ARR_STACK) {
+          printf("%s (%d) : Stack overflow: too many nested array returns\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        Variable* src = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        Variable* buffer = calloc(1, sizeof(Variable));
+        
+        buffer->type = src->type;
+        buffer->arraySize = src->arraySize;
+        buffer->strSize = src->strSize;
+        
+        if(instruction.opcode == OP_RETURN_ARR) {
+          AllocateNumberStorage(buffer, src->arraySize, instruction.line);
+          
+          for(int i = 0; i < src->arraySize; i++) {
+            buffer->numbers[i] = src->numbers[i];
+            buffer->isNone[i] = src->isNone[i];
+          }
+        } else {
+          AllocateStringStorage(buffer, src->arraySize, src->strSize, instruction.line);
+          
+          for(int i = 0; i < src->arraySize; i++) {
+            strncpy(buffer->strings[i], src->strings[i], src->strSize);
+            buffer->strings[i][src->strSize] = '\0';
+            buffer->isNone[i] = src->isNone[i];
+          }
+        }
+        
+        returnedArrStack[returnedArrStackTop++] = buffer;
+        
+        ip = PopCallFrame();
+        break;
+      }
+      case OP_CAPTURE_RETURNED_ARR:
+      case OP_CAPTURE_RETURNED_STR_ARR: {
+        // Assigning a call's array return into a real variable: adopt the
+        // returned buffer's contents into the destination (which has already
+        // been freshly allocated by a preceding OP_DECLARE_*), then free the
+        // now-unneeded temporary buffer.
+        Variable* dest = instruction.isLocal ? BindLocalSlot(instruction.varIndex) : &variables[instruction.varIndex];
+        
+        returnedArrStackTop--;
+        Variable* src = returnedArrStack[returnedArrStackTop];
+        
+        for(int i = 0; i < dest->arraySize; i++) {
+          dest->isNone[i] = src->isNone[i];
+          
+          if(instruction.opcode == OP_CAPTURE_RETURNED_ARR) {
+            dest->numbers[i] = src->numbers[i];
+          } else {
+            strncpy(dest->strings[i], src->strings[i], dest->strSize);
+            dest->strings[i][dest->strSize] = '\0';
+          }
+        }
+        
+        FreeVariableStorage(src);
+        free(src);
+        break;
+      }
+      case OP_INDEX_RETURNED_ARR: {
+        // A call's array return, indexed immediately (e.g. buildArr()[0])
+        // without ever being stored in a named variable: pull out just the
+        // requested element, then the whole temporary buffer is discarded.
+        returnedArrStackTop--;
+        Variable* src = returnedArrStack[returnedArrStackTop];
+        
+        int idx = CheckBounds(Pop(), src->arraySize, instruction.line);
+        
+        Push(src->numbers[idx]);
+        lastPushedIsNone = src->isNone[idx];
+        
+        FreeVariableStorage(src);
+        free(src);
+        break;
+      }
+      case OP_INDEX_RETURNED_STR_ARR: {
+        returnedArrStackTop--;
+        Variable* src = returnedArrStack[returnedArrStackTop];
+        
+        int idx = CheckBounds(Pop(), src->arraySize, instruction.line);
+        
+        if(stringValueStackTop >= MAX_STRING_STACK) {
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        strncpy(stringValueStack[stringValueStackTop], src->strings[idx], INSTRUCTION_MAX_LEN - 1);
+        stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
+        stringValueStackIsNone[stringValueStackTop] = src->isNone[idx];
+        stringValueStackTop++;
+        
+        FreeVariableStorage(src);
+        free(src);
+        break;
+      }
+      case OP_DISCARD_RETURNED_ARR: {
+        // The array return was used as a bare statement, or otherwise never
+        // consumed -- just free it.
+        returnedArrStackTop--;
+        Variable* src = returnedArrStack[returnedArrStackTop];
+        
+        FreeVariableStorage(src);
+        free(src);
+        break;
+      }
       case OP_PUSH_STRING_VALUE: {
         if(stringValueStackTop >= MAX_STRING_STACK) {
           printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
@@ -748,6 +925,50 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_POP_STRING_VALUE:
         stringValueStackTop--;
         break;
+      case OP_DUP_STRING_VALUE: {
+        // Same idea as OP_DUP, but for the string-value stack: replicate a
+        // once-evaluated broadcast string across every slot of a string
+        // array parameter, without re-evaluating (and possibly re-running
+        // a function call) for every element.
+        if(stringValueStackTop >= MAX_STRING_STACK) {
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        strncpy(stringValueStack[stringValueStackTop], stringValueStack[stringValueStackTop - 1], INSTRUCTION_MAX_LEN - 1);
+        stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
+        stringValueStackIsNone[stringValueStackTop] = stringValueStackIsNone[stringValueStackTop - 1];
+        
+        stringValueStackTop++;
+        break;
+      }
+      case OP_PUSH_ARR_ELEMENT_TO_STAGE: {
+        // Push one specific element of an existing array variable onto the
+        // eval stack, used when a caller passes an existing array as an
+        // argument (each element is staged this way, in order).
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
+        Push(v->numbers[instruction.elementIndex]);
+        lastPushedIsNone = v->isNone[instruction.elementIndex];
+        break;
+      }
+      case OP_PUSH_STR_ARR_ELEMENT_TO_STAGE: {
+        // Same as above, for a string array's element, staged onto the
+        // string-value stack instead.
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        
+        if(stringValueStackTop >= MAX_STRING_STACK) {
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        strncpy(stringValueStack[stringValueStackTop], v->strings[instruction.elementIndex], INSTRUCTION_MAX_LEN - 1);
+        stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
+        stringValueStackIsNone[stringValueStackTop] = v->isNone[instruction.elementIndex];
+        
+        stringValueStackTop++;
+        break;
+      }
       case OP_PRINT_STRING_VALUE: {
         stringValueStackTop--;
         
