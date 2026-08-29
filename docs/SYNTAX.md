@@ -645,3 +645,37 @@ function factorial(var int n) =
 print factorial(5);
 // prints 120
 ```
+
+## Input
+
+Same with python, you can request input by using `input` function.
+
+If you write `input` without parameter/prompt, vm gonna request input without output.
+
+Example :
+
+```el
+input;
+```
+
+Else if you create input with params, vm gonna print prompt first and input in one line.
+
+Example : 
+
+```el
+input "Hello : ";
+```
+
+You can assigned input to variable too.
+
+Example :
+
+```el
+name = input;
+```
+
+You also call input and function, likes
+
+```el
+say_hi_to(input "Name : ");
+```

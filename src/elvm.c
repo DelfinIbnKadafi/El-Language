@@ -979,6 +979,45 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         break;
       }
+      case OP_INPUT_STR: {
+        if(instruction.hasPrompt) {
+          char prompt[INSTRUCTION_MAX_LEN];
+          int promptIsNone = 0;
+          
+          ResolveStoreSource(instruction, prompt, INSTRUCTION_MAX_LEN - 1, &promptIsNone);
+          
+          // No trailing newline on purpose, so the person types right after
+          // the prompt on the same line, same feel as most other languages'
+          // input(prompt). Flush explicitly since stdout may be fully
+          // buffered (not line-buffered) once it isn't a live terminal,
+          // and the read below would otherwise block before the prompt
+          // ever became visible.
+          printf("%s", promptIsNone ? "NONE" : prompt);
+          fflush(stdout);
+        }
+        
+        if(stringValueStackTop >= MAX_STRING_STACK) {
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        char line[INSTRUCTION_MAX_LEN];
+        
+        if(fgets(line, INSTRUCTION_MAX_LEN, stdin) == NULL) {
+          // EOF or a read error: nothing meaningful was entered
+          stringValueStack[stringValueStackTop][0] = '\0';
+          stringValueStackIsNone[stringValueStackTop] = 1;
+        } else {
+          line[strcspn(line, "\r\n")] = '\0';
+          
+          strncpy(stringValueStack[stringValueStackTop], line, INSTRUCTION_MAX_LEN - 1);
+          stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
+          stringValueStackIsNone[stringValueStackTop] = 0;
+        }
+        
+        stringValueStackTop++;
+        break;
+      }
       case OP_HALT:
         FreeAllVariables();
         return;

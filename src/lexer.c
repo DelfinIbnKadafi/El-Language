@@ -127,6 +127,13 @@ Token LexerNext() {
     token.type = TOKEN_KW_PRINT;
     return token;
   }
+  // Read input keyword
+  if(strncmp(&source[position], "input", 5) == 0 && !IsWordChar(source[position + 5])) {
+    position += 5;
+    
+    token.type = TOKEN_KW_INPUT;
+    return token;
+  }
   // Read var keyword
   if(strncmp(&source[position], "var", 3) == 0 && !IsWordChar(source[position + 3])) {
     position += 3;

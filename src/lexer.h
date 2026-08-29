@@ -6,6 +6,7 @@ typedef enum {
   // keyword
   TOKEN_KW_EXIT,
   TOKEN_KW_PRINT,
+  TOKEN_KW_INPUT,
   TOKEN_KW_VAR,
   TOKEN_KW_IF,
   TOKEN_KW_ELSE,

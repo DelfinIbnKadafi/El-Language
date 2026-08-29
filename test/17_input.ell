@@ -1,0 +1,28 @@
+// input without prompt
+input;
+
+// with prompt
+input "Hello : ";
+
+// assigment to var
+var str nama = input "Nama : ";
+print nama;
+
+nama = input;
+
+// request input first, and then print
+print input "Nama : ";
+
+// call function with input
+
+function say_name(var str name) =
+  print name;
+
+say_name(input "Name to say : ");
+
+// call pribt, call function, call inout
+
+function ah(var str a) =
+  return a;
+
+print ah(input "Ahhh ; ");

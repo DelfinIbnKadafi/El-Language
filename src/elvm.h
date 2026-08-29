@@ -59,6 +59,7 @@ typedef enum {
   OP_PUSH_STRING_VALUE,
   OP_POP_STRING_VALUE,
   OP_PRINT_STRING_VALUE,
+  OP_INPUT_STR,
   OP_DUP,
   OP_DUP_STRING_VALUE,
   OP_PUSH_ARR_ELEMENT_TO_STAGE,
@@ -195,6 +196,13 @@ typedef struct {
   // existing array (rather than a runtime-popped index) when a caller passes
   // an existing array variable as an argument.
   int elementIndex;
+  
+  // Used by OP_INPUT_STR: true if a prompt was written before ";" (e.g.
+  // input "Name: ";), false for a bare "input;". When true, the prompt
+  // itself is resolved the same way any other string source is (literal,
+  // variable, or sourceFromArgStack for a nested string-producing value) and
+  // printed with no trailing newline before reading a line from stdin.
+  int hasPrompt;
 } Instruction;
 
 // Execute bytecode

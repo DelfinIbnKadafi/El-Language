@@ -360,6 +360,8 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
           push.srcVarIndex = value.srcVarIndex;
           push.srcIsArray = value.srcIsArray;
           push.srcIsLocal = value.srcIsLocal;
+          push.sourceFromArgStack = value.sourceFromArgStack;
+          push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
           push.line = nameToken.line;
           
           strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -451,6 +453,8 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
     push.srcVarIndex = value.srcVarIndex;
     push.srcIsArray = value.srcIsArray;
     push.srcIsLocal = value.srcIsLocal;
+    push.sourceFromArgStack = value.sourceFromArgStack;
+    push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     push.line = nameToken.line;
     
     strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -538,6 +542,8 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
         push.srcVarIndex = value.srcVarIndex;
         push.srcIsArray = value.srcIsArray;
         push.srcIsLocal = value.srcIsLocal;
+        push.sourceFromArgStack = value.sourceFromArgStack;
+        push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
         push.line = nameToken.line;
         
         strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
@@ -867,6 +873,50 @@ StringResult ParseStringValue(Token token) {
     result.isNoneLiteral = 1;
     result.srcVarIndex = -1;
     result.next = LexerNext();
+    
+    return result;
+  }
+  
+  if(token.type == TOKEN_KW_INPUT) {
+    Token afterInput = LexerNext();
+    
+    // Bare "input" (no prompt) is only valid right before whatever token
+    // would end the expression in the surrounding context -- a statement's
+    // ";", a function argument list's "," or ")", or a list literal's "]".
+    // Anything else is the start of a prompt expression instead.
+    int hasPrompt = !(afterInput.type == TOKEN_SEMICOLON || afterInput.type == TOKEN_COMMA ||
+                       afterInput.type == TOKEN_RPAREN || afterInput.type == TOKEN_RBRACKET);
+    
+    Instruction inputInstr = {0};
+    
+    inputInstr.opcode = OP_INPUT_STR;
+    inputInstr.line = token.line;
+    inputInstr.hasPrompt = hasPrompt;
+    
+    if(hasPrompt) {
+      StringResult prompt = ParseStringValue(afterInput);
+      
+      inputInstr.storeNone = prompt.isNoneLiteral;
+      inputInstr.srcVarIndex = prompt.srcVarIndex;
+      inputInstr.srcIsArray = prompt.srcIsArray;
+      inputInstr.srcIsLocal = prompt.srcIsLocal;
+      inputInstr.sourceFromArgStack = prompt.sourceFromArgStack;
+      inputInstr.sourceFromReturnedArrIndex = prompt.sourceFromReturnedArrIndex;
+      
+      strncpy(inputInstr.stringLiteral, prompt.literal, INSTRUCTION_MAX_LEN - 1);
+      inputInstr.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+      
+      result.next = prompt.next;
+    } else {
+      result.next = afterInput;
+    }
+    
+    EmitInstruction(inputInstr);
+    
+    // The line just read now sits on top of stringValueStack, same as a
+    // string-returning function call -- consumers pop it the same way.
+    result.srcVarIndex = -1;
+    result.sourceFromArgStack = 1;
     
     return result;
   }
@@ -1953,6 +2003,7 @@ Token ParseVarDeclaration() {
     
     Instruction instruction = {0};
     
+    instruction.opcode = OP_DECLARE_STR;
     instruction.varIndex = index;
     instruction.isLocal = symbols[index].isLocal;
     instruction.strSize = strSize;
@@ -2368,6 +2419,24 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
 // Parse the print statement, from just after the 'print' keyword's identification.
 Token ParsePrintStatement() {
   Token value = LexerNext();
+  
+  // Print the result of an input prompt directly, e.g. print input "Age: ";
+  if(value.type == TOKEN_KW_INPUT) {
+    StringResult result = ParseStringValue(value);
+    
+    if(result.next.type != TOKEN_SEMICOLON) {
+      CompileError(result.next.line, "Expected ;");
+    }
+    
+    Instruction printInstruction = {0};
+    
+    printInstruction.opcode = OP_PRINT_STRING_VALUE;
+    printInstruction.line = value.line;
+    
+    EmitInstruction(printInstruction);
+    
+    return LexerNext();
+  }
   
   // Print string literal
   if(value.type == TOKEN_LIT_STRING) {
@@ -3220,6 +3289,27 @@ Token ParseStatement(Token token) {
   
   if(token.type == TOKEN_KW_PRINT) {
     return ParsePrintStatement();
+  }
+  
+  if(token.type == TOKEN_KW_INPUT) {
+    // Used as a bare statement (e.g. a "press enter to continue" prompt):
+    // reuses the exact same parsing as input-as-an-expression, just discards
+    // whatever line was read afterward, the same way an unused function
+    // call's return value is discarded.
+    StringResult value = ParseStringValue(token);
+    
+    if(value.next.type != TOKEN_SEMICOLON) {
+      CompileError(value.next.line, "Expected ;");
+    }
+    
+    Instruction discard = {0};
+    
+    discard.opcode = OP_POP_STRING_VALUE;
+    discard.line = token.line;
+    
+    EmitInstruction(discard);
+    
+    return LexerNext();
   }
   
   if(token.type == TOKEN_KW_IF) {
