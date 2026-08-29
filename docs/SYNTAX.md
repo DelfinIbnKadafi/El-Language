@@ -648,7 +648,7 @@ print factorial(5);
 
 ## Input
 
-Same with python, you can request input by using `input` function.
+Same with python, you can request input by using `input` function. Input always give string value.
 
 If you write `input` without parameter/prompt, vm gonna request input without output.
 
