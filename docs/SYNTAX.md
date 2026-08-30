@@ -2,7 +2,7 @@
 
 **Note:** The syntax shown here reflects the latest version of the language and will be updated as new features are added.
 
-## 1. Print
+## Print
 
 ```el
 print "Text";
@@ -24,7 +24,7 @@ print variable;
 print 1 + 10;
 ```
 
-## 2. Exit
+## Exit
 
 Use this statement to stop the program execution.
 
@@ -32,7 +32,7 @@ Use this statement to stop the program execution.
 exit;
 ```
 
-## 3. Variable
+## Variable
 
 #### Declaration
 
