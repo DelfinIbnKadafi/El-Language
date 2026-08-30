@@ -1,0 +1,12 @@
+{
+  "Getting Started": {
+    "Welcome": {
+      "file_md": "content/getting-started/welcome.md",
+      "desc": "Overview of EL and where to start reading."
+    },
+    "installation": {
+      "file_md": "content/getting-started/installation.md",
+      "desc": "Install ELVM in your computer"
+    }
+  }
+}

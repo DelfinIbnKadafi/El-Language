@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>EL Language Docs</title>
+<meta name="color-scheme" content="light" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<header class="navbar">
+  <a class="brand" href="#" data-home>
+    <img class="brand-mark" src="assets/logo.png" alt="EL logo" />
+    <span class="brand-name">EL Lang</span>
+  </a>
+
+  <div class="search-wrap">
+    <input id="search-input" class="search-input" type="text" placeholder="Search docs" autocomplete="off" />
+    <div id="search-results" class="search-results hidden"></div>
+  </div>
+
+  <button id="nav-toggle" class="nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+
+<div class="layout">
+  <nav id="sidebar" class="sidebar">
+    <div id="sidebar-content">Loading navigation…</div>
+  </nav>
+
+  <main id="content" class="content">
+    <p class="loading">Loading…</p>
+  </main>
+</div>
+
+<div id="nav-scrim" class="nav-scrim hidden"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
