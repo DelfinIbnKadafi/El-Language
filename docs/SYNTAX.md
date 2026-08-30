@@ -679,3 +679,15 @@ You also call input and function, likes
 ```el
 say_hi_to(input "Name : ");
 ```
+
+## String Compare
+
+You can compare string type into if statement or another statement.
+
+Example :
+
+```el
+if(string == "Hello")
+// or
+if(string == string2)
+```

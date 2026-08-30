@@ -783,6 +783,35 @@ void VMRun(Instruction* code, int count, char* filename) {
         Push((instruction.opcode == OP_STR_IS_NONE ? isNone : !isNone) ? 1 : 0);
         break;
       }
+      case OP_CMP_STR_EQ:
+      case OP_CMP_STR_NE: {
+        // Both operands were pushed through the general string-value stack
+        // (literal, variable, array element, function call, or input all go
+        // through the same path -- see ParseStringValue), so this compares
+        // by plain text content, the same way general numeric "==" doesn't
+        // special-case NONE either (only the dedicated "== NONE" form does).
+        stringValueStackTop--;
+        char* rhs = stringValueStack[stringValueStackTop];
+        
+        stringValueStackTop--;
+        char* lhs = stringValueStack[stringValueStackTop];
+        
+        int equal = strcmp(lhs, rhs) == 0;
+        
+        Push((instruction.opcode == OP_CMP_STR_EQ ? equal : !equal) ? 1 : 0);
+        break;
+      }
+      case OP_STR_VALUE_IS_NONE:
+      case OP_STR_VALUE_IS_NOT_NONE: {
+        // Generalized form of OP_STR_IS_NONE that works for any string
+        // value, not just a plain variable -- needed since a function call
+        // or input result has no variable to check isNone on directly.
+        stringValueStackTop--;
+        int isNone = stringValueStackIsNone[stringValueStackTop];
+        
+        Push((instruction.opcode == OP_STR_VALUE_IS_NONE ? isNone : !isNone) ? 1 : 0);
+        break;
+      }
       case OP_CALL:
         PushCallFrame(ip, instruction.line);
         ip = instruction.jumpTarget;

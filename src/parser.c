@@ -281,6 +281,9 @@ ExprResult ParseNumericExpressionTail(ExprResult left);
 CondResult ParseOrExpr(Token token);
 CondResult ParseConditionOperand(Token token);
 CondResult ParseComparisonTail(CondResult left, int leftStart, int leftEnd);
+void EmitPushStringValue(StringResult value, int line);
+int LooksLikeGeneralStringValue(Token token);
+CondResult ParseGeneralStringComparison(Token token);
 CondResult ParseAndExprTail(CondResult left);
 CondResult ParseOrExprTail(CondResult left);
 Token ParseStatement(Token token);
@@ -1223,9 +1226,106 @@ CondResult ParseComparisonTail(CondResult left, int leftStart, int leftEnd) {
   return left;
 }
 
+// Emit an OP_PUSH_STRING_VALUE from an already-parsed StringResult, covering
+// every possible source (literal, NONE, an existing variable/array element,
+// a string-returning function call, or an input result) uniformly.
+void EmitPushStringValue(StringResult value, int line) {
+  Instruction push = {0};
+  
+  push.opcode = OP_PUSH_STRING_VALUE;
+  push.storeNone = value.isNoneLiteral;
+  push.srcVarIndex = value.srcVarIndex;
+  push.srcIsArray = value.srcIsArray;
+  push.srcIsLocal = value.srcIsLocal;
+  push.sourceFromArgStack = value.sourceFromArgStack;
+  push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
+  push.line = line;
+  
+  strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
+  push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+  
+  EmitInstruction(push);
+}
+
+// True if this token starts a string value OTHER than a plain variable
+// reference (a string literal, an 'input' expression, or a call to a
+// function that returns a string) -- the plain-variable case is handled
+// separately in ParseComparison, ahead of this check.
+int LooksLikeGeneralStringValue(Token token) {
+  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT) {
+    return 1;
+  }
+  
+  if(token.type == TOKEN_IDENTIFIER) {
+    int funcIndex = FindFunction(token.value);
+    
+    return funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_STR;
+  }
+  
+  return 0;
+}
+
+// General string comparison for anything OTHER than a plain string variable
+// on the left (that narrower, older case stays in ParseComparison below,
+// untouched): a literal, a call to a string-returning function, or an
+// 'input' expression, compared against == or != and any of literal /
+// variable / function call / input / NONE on the right.
+CondResult ParseGeneralStringComparison(Token token) {
+  StringResult lhs = ParseStringValue(token);
+  
+  EmitPushStringValue(lhs, token.line);
+  
+  Token afterLhs = lhs.next;
+  
+  if(afterLhs.type != TOKEN_OP_EQ && afterLhs.type != TOKEN_OP_NE) {
+    CompileError(afterLhs.line, "Strings can only be compared with == or !=");
+  }
+  
+  TokenType op = afterLhs.type;
+  int opLine = afterLhs.line;
+  
+  Token rhsToken = LexerNext();
+  
+  CondResult result = {0};
+  
+  result.type = VAR_BOOL;
+  
+  if(rhsToken.type == TOKEN_KW_NONE) {
+    Instruction checkNone = {0};
+    
+    checkNone.opcode = (op == TOKEN_OP_EQ) ? OP_STR_VALUE_IS_NONE : OP_STR_VALUE_IS_NOT_NONE;
+    checkNone.line = opLine;
+    
+    EmitInstruction(checkNone);
+    
+    result.next = LexerNext();
+    
+    return result;
+  }
+  
+  StringResult rhs = ParseStringValue(rhsToken);
+  
+  EmitPushStringValue(rhs, opLine);
+  
+  Instruction cmp = {0};
+  
+  cmp.opcode = (op == TOKEN_OP_EQ) ? OP_CMP_STR_EQ : OP_CMP_STR_NE;
+  cmp.line = opLine;
+  
+  EmitInstruction(cmp);
+  
+  result.next = rhs.next;
+  
+  return result;
+}
+
 // Parse an optional comparison: operand (comparison_op operand)?
 CondResult ParseComparison(Token token) {
-  // A string variable can only ever be compared with == NONE or != NONE
+  // A plain string variable (or one of its array elements) on the left.
+  // "== NONE" / "!= NONE" keeps using the original, narrower mechanism that
+  // reads the variable's own NONE flag directly; anything else on the right
+  // (a literal, another variable, a function call, or input) falls through
+  // to the same general string-value comparison used below.
   if(token.type == TOKEN_IDENTIFIER) {
     int strIndex = FindSymbol(token.value);
     
@@ -1234,7 +1334,7 @@ CondResult ParseComparison(Token token) {
       Token afterIndex = ParseArrayIndex(strIndex, token, afterName);
       
       if(afterIndex.type != TOKEN_OP_EQ && afterIndex.type != TOKEN_OP_NE) {
-        CompileError(token.line, "String variable '%s' can only be compared with == NONE or != NONE", token.value);
+        CompileError(token.line, "String variable '%s' can only be compared with == or !=", token.value);
       }
       
       TokenType op = afterIndex.type;
@@ -1242,27 +1342,63 @@ CondResult ParseComparison(Token token) {
       
       Token rhs = LexerNext();
       
-      if(rhs.type != TOKEN_KW_NONE) {
-        CompileError(opLine, "String variable '%s' can only be compared with NONE", token.value);
+      if(rhs.type == TOKEN_KW_NONE) {
+        Instruction instruction = {0};
+        
+        instruction.opcode = (op == TOKEN_OP_EQ) ? OP_STR_IS_NONE : OP_STR_IS_NOT_NONE;
+        instruction.varIndex = strIndex;
+        instruction.isLocal = symbols[strIndex].isLocal;
+        instruction.destIsArray = symbols[strIndex].isArray;
+        instruction.line = token.line;
+        
+        EmitInstruction(instruction);
+        
+        CondResult result = {0};
+        
+        result.type = VAR_BOOL;
+        result.next = LexerNext();
+        
+        return result;
       }
       
-      Instruction instruction = {0};
+      // Compared against something other than NONE: a literal, another
+      // variable, a function call, or input. Push this variable's value the
+      // same general way any other string source would be pushed, then
+      // reuse the same comparison machinery as ParseGeneralStringComparison.
+      Instruction pushLhs = {0};
       
-      instruction.opcode = (op == TOKEN_OP_EQ) ? OP_STR_IS_NONE : OP_STR_IS_NOT_NONE;
-      instruction.varIndex = strIndex;
-      instruction.isLocal = symbols[strIndex].isLocal;
-      instruction.destIsArray = symbols[strIndex].isArray;
-      instruction.line = token.line;
+      pushLhs.opcode = OP_PUSH_STRING_VALUE;
+      pushLhs.srcVarIndex = strIndex;
+      pushLhs.srcIsArray = symbols[strIndex].isArray;
+      pushLhs.srcIsLocal = symbols[strIndex].isLocal;
+      pushLhs.line = token.line;
       
-      EmitInstruction(instruction);
+      EmitInstruction(pushLhs);
+      
+      StringResult rhsValue = ParseStringValue(rhs);
+      
+      EmitPushStringValue(rhsValue, opLine);
+      
+      Instruction cmp = {0};
+      
+      cmp.opcode = (op == TOKEN_OP_EQ) ? OP_CMP_STR_EQ : OP_CMP_STR_NE;
+      cmp.line = opLine;
+      
+      EmitInstruction(cmp);
       
       CondResult result = {0};
       
       result.type = VAR_BOOL;
-      result.next = LexerNext();
+      result.next = rhsValue.next;
       
       return result;
     }
+  }
+  
+  // Something else that looks like a string value on the left: a literal,
+  // input, or a call to a string-returning function.
+  if(LooksLikeGeneralStringValue(token)) {
+    return ParseGeneralStringComparison(token);
   }
   
   int leftStart = bytecodeCount;

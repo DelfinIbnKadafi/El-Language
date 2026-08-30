@@ -74,6 +74,10 @@
           "match": "\\b(print)\\b"
         },
         {
+          "name": "keyword.other.input.ellang",
+          "match": "\\b(input)\\b"
+        },
+        {
           "name": "storage.type.var.ellang",
           "match": "\\b(var)\\b"
         },

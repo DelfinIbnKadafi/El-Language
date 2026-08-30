@@ -1,0 +1,16 @@
+var str[16] name;
+name = "Delfin";
+
+if(name == "Delfin") =
+  print "Name == Delfin";
+
+var str tmp;
+
+tmp = input "Name to say : ";
+
+if(tmp != "Delfin") =
+  print tmp;
+else =
+  print "Oh, you say Delfin";
+
+exit;
