@@ -12,18 +12,10 @@ const navToggle = document.getElementById("nav-toggle");
 const sidebar = document.getElementById("sidebar");
 const navScrim = document.getElementById("nav-scrim");
 
-let pages = [];      // flat list: { title, path, group }
-let groups = [];      // [{ name, pages: [...] }]
+let pages = [];
+let groups = [];
 let highlighter = null;
 
-/* ---------------- Config parsing ---------------- */
-/* content.json format:
-   {
-     "Group Name": {
-       "Page Title": { "file_md": "path/to/file.md", "desc": "shown in search" }
-     }
-   }
-*/
 function parseNavConfig(data) {
   const parsedGroups = [];
 
@@ -47,8 +39,6 @@ function parseNavConfig(data) {
   return parsedGroups;
 }
 
-/* ---------------- Sidebar ---------------- */
-
 function renderSidebar(activePath) {
   sidebarEl.innerHTML = "";
   for (const group of groups) {
@@ -70,8 +60,6 @@ function renderSidebar(activePath) {
     sidebarEl.appendChild(groupEl);
   }
 }
-
-/* ---------------- Search ---------------- */
 
 function runSearch(query) {
   const q = query.trim().toLowerCase();
@@ -115,8 +103,6 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest(".search-wrap")) searchResults.classList.add("hidden");
 });
 
-/* ---------------- Mobile nav toggle ---------------- */
-
 navToggle.addEventListener("click", () => {
   const open = sidebar.classList.toggle("open");
   navScrim.classList.toggle("hidden", !open);
@@ -128,8 +114,6 @@ navScrim.addEventListener("click", () => {
   navScrim.classList.add("hidden");
   navToggle.setAttribute("aria-expanded", "false");
 });
-
-/* ---------------- Markdown rendering ---------------- */
 
 function escapeHtml(str) {
   return str.replace(/[&<>"']/g, (c) => ({
@@ -146,7 +130,62 @@ function resolveRelative(base, target) {
   if (/^https?:\/\//.test(target) || target.startsWith("/") || target.startsWith("#")) {
     return target;
   }
-  return base + target;
+  return target;
+}
+
+function renderErrorCard(path, reason) {
+  const fileName = path.split("/").pop();
+  return `
+    <div class="notice-card notice-card--error">
+      <div class="notice-label">${escapeHtml(fileName)}</div>
+      <div class="notice-box">${escapeHtml(reason)}</div>
+    </div>
+  `;
+}
+
+function renderFooterNav(path) {
+  const index = pages.findIndex((p) => p.path === path);
+  if (index === -1) return "";
+
+  const prev = pages[index - 1];
+  const next = pages[index + 1];
+  if (!prev && !next) return "";
+
+  const prevHtml = prev
+    ? `<a class="footer-nav-link footer-nav-link--prev" href="#${prev.path}">
+         <span class="footer-nav-label">← Previous</span>
+         <span class="footer-nav-title">${escapeHtml(prev.title)}</span>
+       </a>`
+    : "";
+
+  const nextHtml = next
+    ? `<a class="footer-nav-link footer-nav-link--next" href="#${next.path}">
+         <span class="footer-nav-label">Next →</span>
+         <span class="footer-nav-title">${escapeHtml(next.title)}</span>
+       </a>`
+    : "";
+
+  return `<div class="page-footer-nav">${prevHtml}${nextHtml}</div>`;
+}
+
+function expandPageLinkButtons(md, baseDir) {
+  const lines = md.split("\n");
+  let inFence = false;
+
+  return lines.map((line) => {
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+      return line;
+    }
+    if (inFence) return line;
+
+    return line.replace(/(?<!!)\[([\w\-./]+\.md)\](?!\()/g, (match, rawPath) => {
+      const resolved = resolveRelative(baseDir, rawPath);
+      const known = pages.find((p) => p.path === resolved);
+      const label = known ? known.title : rawPath.split("/").pop().replace(/\.md$/, "");
+      return `<a class="page-link-button" href="#${resolved}">${escapeHtml(label)} →</a>`;
+    });
+  }).join("\n");
 }
 
 function makeRenderer(baseDir) {
@@ -158,13 +197,11 @@ function makeRenderer(baseDir) {
   };
 
   renderer.link = (href, title, text) => {
-    const isExternal = /^https?:\/\//.test(href);
-    if (isExternal) {
+    if (/^https?:\/\//.test(href)) {
       return `<a href="${href}" target="_blank" rel="noopener">${text}</a>`;
     }
     if (href.endsWith(".md")) {
-      const resolved = resolveRelative(baseDir, href);
-      return `<a href="#${resolved}">${text}</a>`;
+      return `<a href="#${resolveRelative(baseDir, href)}">${text}</a>`;
     }
     return `<a href="${resolveRelative(baseDir, href)}">${text}</a>`;
   };
@@ -183,27 +220,35 @@ function makeRenderer(baseDir) {
 
 async function highlightPendingBlocks(container) {
   const blocks = container.querySelectorAll("pre[data-pending]");
+
   for (const pre of blocks) {
     const lang = pre.getAttribute("data-lang");
-    const codeEl = pre.querySelector("code");
-    const raw = codeEl.textContent;
+    const raw = pre.querySelector("code").textContent;
 
     if (lang === "el" && highlighter) {
       try {
         const html = highlighter.codeToHtml(raw, { lang: "ellang", theme: "github-dark-default" });
         const tmp = document.createElement("div");
         tmp.innerHTML = html;
-        const innerPre = tmp.querySelector("pre");
-        if (innerPre) {
-          pre.replaceWith(innerPre);
+        const highlighted = tmp.querySelector("pre");
+        if (highlighted) {
+          pre.replaceWith(highlighted);
           continue;
         }
       } catch (err) {
-        console.warn("Highlight failed for ell block", err);
+        console.warn("Couldn't highlight this block, leaving it plain:", err);
       }
     }
     pre.removeAttribute("data-pending");
   }
+}
+
+async function renderMermaidBlocks(container) {
+  if (!window.mermaid) return;
+  const blocks = container.querySelectorAll(".mermaid");
+  if (!blocks.length) return;
+  mermaid.initialize({ startOnLoad: false, theme: "neutral" });
+  await mermaid.run({ nodes: blocks });
 }
 
 async function loadPage(path) {
@@ -211,39 +256,23 @@ async function loadPage(path) {
 
   try {
     const res = await fetch(path);
-    if (!res.ok) throw new Error("Not found: " + path);
+    if (!res.ok) throw new Error("not found");
     const md = await res.text();
 
-    const redirectMatch = md.trim().match(/^<!--\s*redirect:\s*(.+?)\s*-->/i);
-    if (redirectMatch) {
-      const target = redirectMatch[1].trim();
-      if (target && target !== path) {
-        window.location.hash = target;
-        return;
-      }
-    }
-
     const baseDir = dirOf(path);
-    marked.use({ renderer: makeRenderer(baseDir) });
-    contentEl.innerHTML = marked.parse(md);
+    const html = marked.parse(expandPageLinkButtons(md, baseDir), { renderer: makeRenderer(baseDir) });
+    contentEl.innerHTML = html + renderFooterNav(path);
 
     await highlightPendingBlocks(contentEl);
-
-    if (window.mermaid) {
-      const mermaidBlocks = contentEl.querySelectorAll(".mermaid");
-      if (mermaidBlocks.length) {
-        mermaid.initialize({ startOnLoad: false, theme: "neutral" });
-        await mermaid.run({ nodes: mermaidBlocks });
-      }
-    }
+    await renderMermaidBlocks(contentEl);
 
     renderSidebar(path);
-    document.title = pages.find((p) => p.path === path)?.title
-      ? `${pages.find((p) => p.path === path).title} — EL Lang Docs`
-      : "EL Lang Docs";
+
+    const activePage = pages.find((p) => p.path === path);
+    document.title = activePage ? `${activePage.title} — EL Lang Docs` : "EL Lang Docs";
   } catch (err) {
-    console.error("loadPage failed for", path, err);
-    contentEl.innerHTML = `<p class="error-msg">Can't load ${escapeHtml(path)}</p>`;
+    console.error("Failed to load", path, err);
+    contentEl.innerHTML = renderErrorCard(path, "Can't load this page.");
   }
 
   sidebar.classList.remove("open");
@@ -251,11 +280,8 @@ async function loadPage(path) {
   window.scrollTo(0, 0);
 }
 
-/* ---------------- Router ---------------- */
-
 function currentPathFromHash() {
-  const hash = window.location.hash.replace(/^#/, "");
-  return hash || HOME_PATH;
+  return window.location.hash.replace(/^#/, "") || HOME_PATH;
 }
 
 window.addEventListener("hashchange", () => loadPage(currentPathFromHash()));
@@ -264,8 +290,6 @@ document.querySelector("[data-home]").addEventListener("click", (e) => {
   e.preventDefault();
   window.location.hash = HOME_PATH;
 });
-
-/* ---------------- Init ---------------- */
 
 async function init() {
   const navData = await fetch(NAV_CONFIG_PATH).then((r) => r.json());
@@ -279,7 +303,7 @@ async function init() {
     grammar.name = "ellang";
     await highlighter.loadLanguage(grammar);
   } catch (err) {
-    console.warn("Could not load EL syntax highlighter, falling back to plain code blocks.", err);
+    console.warn("EL syntax highlighter didn't load, falling back to plain code blocks:", err);
   }
 
   await loadPage(currentPathFromHash());
