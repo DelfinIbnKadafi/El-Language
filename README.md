@@ -1,63 +1,123 @@
-# El Language
+# El Language (Ellang)
 
-El is a high-level programming language built on a custom Virtual Machine (VM) architecture.
-
-It prioritizes simplicity, productivity, and portability, delivering a consistent execution environment across platforms through its own VM.
-
-![Logo](logo.png)
-
-## Architecture
-
-El programs compile to bytecode and run inside the El Virtual Machine. The VM manages memory, execution flow, and runtime operations, ensuring applications work the same way everywhere.
-
-## Code Example
+**El Language**, or **Ellang**, is a custom programming language with clean, easy-to-read syntax, running on its own virtual machine called **ELVM (El Virtual Machine)**. Built from scratch in C, no external dependencies.
 
 ```el
-print "Hello World!";
-
-// Variables
-var int age = 25;
-var str[20] name = "Alice";
-var bool is_active = true;
-
-// Arrays
-var int scores[5] = {10, 20, 30, 40, 50};
-
-// Function with return
-function greet(var str[20] user) =
-  return "Hello, " + user;
-
-// Function with array parameter
-function sum_array(var int arr[3]) =
-  return arr[0] + arr[1] + arr[2];
-
-// Recursion
 function factorial(var int n) =
   if(n <= 1) =
     return 1;
   return n * factorial(n - 1);
 
-// Control flow
-if(age >= 18) =
-  print greet(name);
-  print "You are an adult.";
-else =
-  print "Access denied.";
+var str[16] name = input "What's your name? ";
 
-// Loop
-for(var int i = 0; i < 5; i++) =
-  print i;
-
-// Input
-var str[50] user_input = input "Enter something: ";
-print user_input;
-
-// String comparison
-if(user_input == "secret") =
-  print "Access granted!";
-
-exit;
+print "Hello,";
+print name;
+print factorial(5);
 ```
+
+![El Logo](logo.png)
+
+## What is El Language?
+
+Ellang is a high-level language designed to feel familiar to anyone coming from C, JavaScript, or Python, while keeping its own rules simple and consistent:
+
+- **Indentation-based blocks**, similar to Python, but using `=` to open a block instead of `:`.
+- **Statically-ish typed** — types are checked at compile time, with automatic widening (`int` to `float`) and a universal `NONE` value for "no value yet", across every type.
+- **No shadowing** — a local variable can never reuse a name still visible from an outer scope, removing a whole class of naming bugs.
+- **Real recursion** — every function call, including a function calling itself, gets its own independent copy of its local variables through an actual call stack.
+- **Clear errors** — every compile or runtime failure is reported as `file.ell (line) : message`, never a silent crash.
+
+## Architecture
+
+Ellang source code goes through three stages before it runs:
+
+```
+source.ell → [Lexer] → tokens → [Parser] → bytecode → [ELVM] → result
+```
+
+| Component | Files | Role |
+|---|---|---|
+| **Lexer** | `lexer.c` / `lexer.h` | Turns source code into tokens (keywords, identifiers, literals, operators, etc). |
+| **Parser** | `parser.c` / `parser.h` | Parses syntax, checks types, resolves scope/variables, and compiles everything into bytecode. |
+| **ELVM** | `elvm.c` / `elvm.h` | A stack-based virtual machine that executes the bytecode — variable storage, the call stack (for recursion), and every runtime operation. |
+| **Entry point** | `main.c` | Wires the three together: reads the file, then runs lexer → parser → VM. |
+
+A couple of the more important design choices behind it:
+
+- **Compile-time scope tracking** — every block (`if`/`for`/`while`/`function`) gets its own scope through a cheap push/pop mechanism, with no runtime allocation needed just to track name visibility.
+- **Real call frames for recursion** — a function's local variables live on a separate stack from globals, so recursive calls (`factorial`, `fibonacci`, etc.) never clobber each other.
+- **Dynamically sized arrays and strings** — allocated with `malloc` as needed, with no upper limit beyond available memory.
+
+## Example Code
+
+### Hello World
+
+```el
+print "Hello, World!";
+```
+
+### Variables & Types
+
+```el
+var int age = 21;
+var str[32] name = "Delfin";
+var bool isOnline = true;
+
+print age;
+print name;
+print isOnline;
+```
+
+### Conditionals & Loops
+
+```el
+for(var int i = 0; i < 5; i++) =
+  if(i < 3) =
+    print "small";
+  else =
+    print "big";
+```
+
+### Functions & Recursion
+
+```el
+function fib(var int n) =
+  if(n <= 1) =
+    return n;
+  return fib(n - 1) + fib(n - 2);
+
+var int i = 0;
+while(i < 8) =
+  print fib(i);
+  i++;
+```
+
+### Arrays as Parameters & Return Values
+
+```el
+function sumOf(var int numbers[3]) =
+  return numbers[0] + numbers[1] + numbers[2];
+
+function makeArray() =
+  var int result[3] = {10, 20, 30};
+  return result;
+
+print sumOf([1, 2, 3]);   // list literal
+print sumOf(10);          // broadcast, every element becomes 10
+print makeArray()[1];     // indexed directly, no need to store it first
+```
+
+### Interactive Input & String Comparison
+
+```el
+var str[16] answer = input "Continue? (y/n): ";
+
+if(answer == "y") =
+  print "Continuing...";
+else =
+  print "Cancelled.";
+```
+
 
 ## Getting Started
 
