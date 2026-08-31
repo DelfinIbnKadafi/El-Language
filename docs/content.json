@@ -6,7 +6,29 @@
     },
     "installation": {
       "file_md": "content/getting-started/installation.md",
-      "desc": "Install ELVM in your computer"
+      "desc": "Install ELVM in your computer."
+    }
+  },
+  "Variables": {
+    "Basics": {
+      "file_md": "content/variables/basics.md",
+      "desc": "Variables basic guide."
+    },
+    "Integer Variables": {
+      "file_md": "content/variables/integer.md",
+      "desc": "Integer variable guide."
+    },
+    "String Variables": {
+      "file_md": "content/variables/string.md",
+      "desc": "String variable guide."
+    },
+    "Float Variables": {
+      "file_md": "content/variables/float.md",
+      "desc": "Float variable guide."
+    },
+    "Bool Variables": {
+      "file_md": "content/variables/bool.md",
+      "desc": "Bool variable guide."
     }
   }
 }
