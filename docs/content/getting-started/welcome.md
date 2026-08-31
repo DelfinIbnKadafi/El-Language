@@ -15,7 +15,7 @@ print name;
 print factorial(5);
 ```
 
-![Logo El](https://el-lang.my.id/assets/logo.png)
+![Logo El](assets/logo.png)
 
 ## What is El Language?
 
@@ -121,7 +121,7 @@ else =
 
 ## Getting Started
 
-Install ELVM in your computer, read [Installation](installation.md)
+Install ELVM in your computer, read [Installation](content/getting-started/installation.md)
 
 ## License
 

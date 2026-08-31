@@ -18,10 +18,10 @@ var data_type variable_name = init_value;
 
 El have 4 data type so far, that is:
 
-1. int (Integer/Round number) [Integer Guide](integer.md)
-2. str (String/Text, including symbols) [String Guide](string.md)
-3. float (Decimal) [Float Guide](float.md)
-4. bool (Boolean true/false) [Bool Guide](bool.md)
+1. int (Integer/Round number) [Integer Guide](content/variables/integer.md)
+2. str (String/Text, including symbols) [String Guide](content/variables/string.md)
+3. float (Decimal) [Float Guide](content/variables/float.md)
+4. bool (Boolean true/false) [Bool Guide](content/variables/bool.md)
 
 Example:
 
