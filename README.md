@@ -125,6 +125,6 @@ Open https://el-lang.my.id/ for complete documentation of El Language.
 
 ## License
 
-[MIT License](LICENSE)
+[Apache-2.0 License](LICENSE)
 
 Open source. Feel free to explore, contribute, and improve the language.
