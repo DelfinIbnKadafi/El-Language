@@ -1,3 +1,0 @@
-// this should just print plain text to the screen, nothing fancy
-print "Hello, El!";
-print "Second line";

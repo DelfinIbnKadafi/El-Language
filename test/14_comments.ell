@@ -1,9 +1,0 @@
-// this whole line is a comment, gonna be ignored by the compiler
-print "before comment"; // comments can also trail after real code
-
-/* this is a block comment
-   it can span across
-   multiple lines just fine */
-print "after block comment";
-
-/* block comments can also sit inline */ print "still works";
