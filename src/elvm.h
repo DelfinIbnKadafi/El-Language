@@ -3,14 +3,19 @@
 
 #include "lexer.h"
 
-// Max number of variables the VM can hold
-#define MAX_VARIABLES 256
+// Number of variable slots the VM allocates, both for globals and for each
+// call frame's locals. Set once, right before VMRun(), to the peak number of
+// variables simultaneously in scope anywhere in the compiled program -- so
+// there's no fixed cap on how many variables a program can declare.
+extern int variableSlotCount;
 
-// Max length of instruction string data
-#define INSTRUCTION_MAX_LEN 256
-
-// Max characters per string, per array element (matches INSTRUCTION_MAX_LEN)
+// Default max characters per string when no explicit str[size] is given.
+// A custom size is not limited by this -- see AllocateStringStorage.
 #define MAX_STR_LEN 256
+
+// Kept only for the small handful of fixed-size name buffers (variable and
+// function names, unrelated to string content length).
+#define INSTRUCTION_MAX_LEN 256
 
 // Max depth of function call nesting (including recursion), guards against
 // runaway/infinite recursion with a clean error instead of a native crash.
@@ -118,11 +123,13 @@ typedef struct {
 typedef struct {
   Opcode opcode;
   
-  // Variable name (OP_DECLARE_*) or literal text to print (OP_PRINT)
-  char text[INSTRUCTION_MAX_LEN];
+  // Variable name (OP_DECLARE_*) or literal text to print (OP_PRINT).
+  // Heap-allocated, no length limit.
+  char* text;
   
-  // String literal to store, used by OP_DECLARE_STR and OP_STORE_STR
-  char stringLiteral[INSTRUCTION_MAX_LEN];
+  // String literal to store, used by OP_DECLARE_STR and OP_STORE_STR.
+  // Heap-allocated, no length limit.
+  char* stringLiteral;
   
   // Numeric literal value, used by OP_PUSH_NUMBER
   double numberValue;

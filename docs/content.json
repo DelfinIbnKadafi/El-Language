@@ -10,25 +10,149 @@
     }
   },
   "Variables": {
-    "Basics": {
-      "file_md": "content/variables/basics.md",
-      "desc": "Variables basic guide."
+    "Declaring Variables": {
+      "file_md": "content/variables/declaring-variables.md",
+      "desc": "How to declare a variable, supported data types, and default values."
     },
-    "Integer Variables": {
-      "file_md": "content/variables/integer.md",
-      "desc": "Integer variable guide."
+    "Assignment & Updates": {
+      "file_md": "content/variables/assignment-and-updates.md",
+      "desc": "Assigning, incrementing, and compound-updating a variable's value."
     },
-    "String Variables": {
-      "file_md": "content/variables/string.md",
-      "desc": "String variable guide."
+    "Scope: Global & Local": {
+      "file_md": "content/variables/scope.md",
+      "desc": "How global and local variables work, and why EL doesn't allow shadowing."
+    }
+  },
+  "Data Types": {
+    "int": {
+      "file_md": "content/data-types/int.md",
+      "desc": "The int data type."
     },
-    "Float Variables": {
-      "file_md": "content/variables/float.md",
-      "desc": "Float variable guide."
+    "float": {
+      "file_md": "content/data-types/float.md",
+      "desc": "The float data type."
     },
-    "Bool Variables": {
-      "file_md": "content/variables/bool.md",
-      "desc": "Bool variable guide."
+    "bool": {
+      "file_md": "content/data-types/bool.md",
+      "desc": "The bool data type."
+    },
+    "str": {
+      "file_md": "content/data-types/str.md",
+      "desc": "The str data type, including sized strings and truncation."
+    }
+  },
+  "NONE Value": {
+    "The NONE Value": {
+      "file_md": "content/none-value/none.md",
+      "desc": "EL's universal 'no value yet' value, and how it behaves in math and conditions."
+    }
+  },
+  "Arrays": {
+    "Arrays": {
+      "file_md": "content/arrays/arrays.md",
+      "desc": "Declaring, indexing, and using array variables."
+    },
+    "Initial Values": {
+      "file_md": "content/arrays/initial-values.md",
+      "desc": "Setting default/initial values for array variables."
+    },
+    "Copying Values": {
+      "file_md": "content/arrays/copying-values.md",
+      "desc": "Copying values between array elements."
+    }
+  },
+  "Operators": {
+    "Assignment Operators": {
+      "file_md": "content/operators/assignment-operators.md",
+      "desc": "=, +=, -=, ++, and -- operators."
+    },
+    "Comparison Operators": {
+      "file_md": "content/operators/comparison-operators.md",
+      "desc": "==, !=, <, >, <=, and >= operators."
+    },
+    "Logical Operators": {
+      "file_md": "content/operators/logical-operators.md",
+      "desc": "The or, and, and not operators."
+    }
+  },
+  "Math": {
+    "Arithmetic": {
+      "file_md": "content/math/arithmetic.md",
+      "desc": "Arithmetic operators, operator precedence, and int/float division rules."
+    }
+  },
+  "Strings": {
+    "Sized Strings": {
+      "file_md": "content/strings/sized-strings.md",
+      "desc": "Fixed-size strings, default size, and truncation behavior."
+    },
+    "String Comparison": {
+      "file_md": "content/strings/string-comparison.md",
+      "desc": "Comparing string values with == and !=."
+    }
+  },
+  "Console": {
+    "print": {
+      "file_md": "content/console/print.md",
+      "desc": "Printing text, variables, and expressions to the console."
+    },
+    "input": {
+      "file_md": "content/console/input.md",
+      "desc": "Reading input from the console, with or without a prompt."
+    }
+  },
+  "Control Flow": {
+    "If / Else": {
+      "file_md": "content/control-flow/if-else.md",
+      "desc": "if, else, and else if statements, one-line statements, and empty blocks."
+    },
+    "For Loop": {
+      "file_md": "content/control-flow/for-loop.md",
+      "desc": "The for loop: initialization, condition, and increment/decrement."
+    },
+    "While Loop": {
+      "file_md": "content/control-flow/while-loop.md",
+      "desc": "The while loop."
+    },
+    "Exit Statement": {
+      "file_md": "content/control-flow/exit.md",
+      "desc": "Stopping program execution early with exit."
+    }
+  },
+  "Functions": {
+    "Functions": {
+      "file_md": "content/functions/functions.md",
+      "desc": "Declaring and calling a function."
+    },
+    "Parameters": {
+      "file_md": "content/functions/parameters.md",
+      "desc": "Passing values into a function."
+    },
+    "Array Parameters": {
+      "file_md": "content/functions/array-parameters.md",
+      "desc": "Passing arrays into a function, by list, variable, or broadcast."
+    },
+    "Return": {
+      "file_md": "content/functions/return.md",
+      "desc": "Returning a value from a function with return."
+    },
+    "Returning Arrays": {
+      "file_md": "content/functions/returning-arrays.md",
+      "desc": "Returning an array from a function."
+    },
+    "Recursion": {
+      "file_md": "content/functions/recursion.md",
+      "desc": "How EL supports recursive function calls."
+    }
+  },
+  "Error Handling": {
+    "Compile-Time Errors": {
+      "file_md": "content/error-handling/compile-time-errors.md",
+      "desc": "Errors reported by ELVM before your program runs."
+    },
+    "Runtime Errors": {
+      "file_md": "content/error-handling/runtime-errors.md",
+      "desc": "Errors reported by ELVM while your program is running."
     }
   }
 }

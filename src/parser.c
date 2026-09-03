@@ -60,13 +60,21 @@ typedef struct {
 // Functions cannot nest, so a simple flag (not a counter) is enough.
 int insideFunctionBody = 0;
 
-// Symbol table storage
-Symbol symbols[MAX_VARIABLES];
+// Symbol table storage. Grows as needed -- see DeclareSymbol -- so there's
+// no fixed cap on how many variables a program can have in scope at once.
+Symbol* symbols;
+int symbolCapacity = 0;
 
 // Current symbol table size. At any point during parsing, symbols[0..symbolCount)
 // is exactly the set of variables currently visible (every enclosing scope that
 // hasn't closed yet, plus the current scope so far) -- see PushScope/PopScope.
 int symbolCount = 0;
+
+// Highest symbolCount has ever reached. This is the true peak number of
+// variables simultaneously in scope anywhere in the program, so it's what
+// the VM sizes its own storage to once compilation finishes -- see
+// variableSlotCount in elvm.h.
+int peakSymbolCount = 0;
 
 // Stack of block scopes. Each entry records the symbolCount snapshot from the
 // moment that scope was entered, so closing it can "forget" every variable
@@ -74,15 +82,18 @@ int symbolCount = 0;
 // available for reuse by a later sibling block. No shadowing is supported: a
 // name still visible from any open enclosing scope makes a redeclaration an
 // error, exactly like the existing (pre-scoping) duplicate-name check.
-#define MAX_SCOPE_DEPTH 64
-
-int scopeStack[MAX_SCOPE_DEPTH];
+// Grows as needed, so there's no fixed cap on nested block depth.
+int* scopeStack;
+int scopeCapacity = 0;
 int scopeDepth = 0;
 
 // Enter a new block scope (if/else/for/while body).
 void PushScope(int line) {
-  if(scopeDepth >= MAX_SCOPE_DEPTH) {
-    CompileError(line, "Too many nested blocks");
+  (void)line; // no longer used to report a cap, kept for call-site compatibility
+  
+  if(scopeDepth >= scopeCapacity) {
+    scopeCapacity = scopeCapacity == 0 ? 16 : scopeCapacity * 2;
+    scopeStack = realloc(scopeStack, scopeCapacity * sizeof(int));
   }
   
   scopeStack[scopeDepth++] = symbolCount;
@@ -104,23 +115,21 @@ int FindSymbol(char* name) {
   return -1;
 }
 
-#define MAX_FUNCTIONS 64
-#define MAX_PARAMS 16
-
 // A declared function's signature and where its compiled body lives.
 typedef struct {
   char name[TOKEN_MAX_LEN];
   
   int paramCount;
-  VarType paramTypes[MAX_PARAMS];
-  int paramVarIndex[MAX_PARAMS];
-  int paramStrSize[MAX_PARAMS];
+  int paramCapacity;
+  VarType* paramTypes;
+  int* paramVarIndex;
+  int* paramStrSize;
   
   // Array parameters only. paramIsArray[i] marks whether parameter i is an
   // array (rather than scalar); paramArraySize[i] is its required size, set
   // in the signature just like a normal array declaration.
-  int paramIsArray[MAX_PARAMS];
-  int paramArraySize[MAX_PARAMS];
+  int* paramIsArray;
+  int* paramArraySize;
   
   // Meaningful only when hasReturnValue is true. Inferred from the function's
   // own 'return' statements (int/float widen like everywhere else in this
@@ -143,19 +152,25 @@ typedef struct {
   
   // Bytecode positions of 'return;' statements compiled before hasReturnValue
   // was known yet, needing a fixup once (if) it becomes known -- see
-  // ParseReturnStatement.
-  int pendingBareReturns[64];
+  // ParseReturnStatement. Grows as needed.
+  int* pendingBareReturns;
+  int pendingBareReturnCapacity;
   int pendingBareReturnCount;
   
-  // True if a call to this function (from inside its own body, i.e.
-  // recursion) was compiled while hasReturnValue was still false. If the
-  // function's return kind later does resolve to true, that earlier call
-  // was compiled wrongly (assuming no value), which would corrupt the stack
-  // at runtime -- checked and rejected at the end of the definition.
-  int hadAmbiguousSelfCall;
+  // True if a call to this function from inside its own body (recursion) was
+  // compiled while its return kind wasn't known yet -- e.g. the recursive
+  // case is written before the base case. That call is compiled optimistically
+  // as if it returns a plain int/float/bool value (see ParseFunctionCallArgs);
+  // this is checked once the function's real return kind is known, at the end
+  // of its definition, and rejected only if that optimism turned out wrong.
+  int hadTentativeSelfCall;
+  int tentativeSelfCallLine;
 } FunctionSymbol;
 
-FunctionSymbol functionSymbols[MAX_FUNCTIONS];
+// Function table storage. Grows as needed -- see DeclareFunction -- so
+// there's no fixed cap on how many functions a program can declare.
+FunctionSymbol* functionSymbols;
+int functionSymbolCapacity = 0;
 int functionSymbolCount = 0;
 
 // Index into functionSymbols of the function currently being defined, or -1
@@ -173,14 +188,41 @@ int FindFunction(char* name) {
   return -1;
 }
 
+// True if a call to 'funcIndex' can be used as a plain int/float/bool value
+// at this point in compilation. If the function's return kind isn't known
+// yet, that's only ever allowed for a call to itself (recursion) -- and only
+// optimistically: the call itself (OP_CALL) doesn't push or expect any
+// value, the real value is pushed by whichever 'return' inside the function
+// body actually runs, so guessing "plain scalar value" here is safe exactly
+// when the function's real kind later resolves to that. The guess is
+// recorded so ParseFunctionDefinition can reject it once the real kind is
+// known, if it turns out wrong (void, or a string).
+int CanUseCallAsScalarValue(int funcIndex, int line) {
+  FunctionSymbol* func = &functionSymbols[funcIndex];
+  
+  if(func->hasReturnValue) {
+    return !func->returnsArray && func->returnType != VAR_STR;
+  }
+  
+  if(funcIndex != currentFunctionIndex) {
+    return 0;
+  }
+  
+  func->hadTentativeSelfCall = 1;
+  func->tentativeSelfCallLine = line;
+  
+  return 1;
+}
+
 // Register new variable, error if name already declared
 int DeclareSymbol(char* name, VarType type, int isArray, int arraySize, int strSize, int line) {
   if(FindSymbol(name) != -1) {
     CompileError(line, "Variable '%s' already declared", name);
   }
   
-  if(symbolCount >= MAX_VARIABLES) {
-    CompileError(line, "Too many variables");
+  if(symbolCount >= symbolCapacity) {
+    symbolCapacity = symbolCapacity == 0 ? 64 : symbolCapacity * 2;
+    symbols = realloc(symbols, symbolCapacity * sizeof(Symbol));
   }
   
   strncpy(symbols[symbolCount].name, name, TOKEN_MAX_LEN - 1);
@@ -192,7 +234,13 @@ int DeclareSymbol(char* name, VarType type, int isArray, int arraySize, int strS
   symbols[symbolCount].strSize = strSize;
   symbols[symbolCount].isLocal = insideFunctionBody;
   
-  return symbolCount++;
+  symbolCount++;
+  
+  if(symbolCount > peakSymbolCount) {
+    peakSymbolCount = symbolCount;
+  }
+  
+  return symbolCount - 1;
 }
 
 // Add one instruction, growing storage if needed. Returns the index it was stored at.
@@ -228,7 +276,8 @@ typedef struct {
 typedef struct {
   Token next;
   
-  char literal[INSTRUCTION_MAX_LEN];
+  // Heap-allocated (from the token that produced it), unbounded length
+  char* literal;
   
   int srcVarIndex;
   int srcIsArray;
@@ -367,8 +416,7 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
           push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
           push.line = nameToken.line;
           
-          strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-          push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+          push.stringLiteral = value.literal;
           
           EmitInstruction(push);
           
@@ -460,8 +508,7 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
     push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     push.line = nameToken.line;
     
-    strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-    push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    push.stringLiteral = value.literal;
     
     EmitInstruction(push);
     
@@ -549,8 +596,7 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
         push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
         push.line = nameToken.line;
         
-        strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-        push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+        push.stringLiteral = value.literal;
         
         EmitInstruction(push);
         
@@ -597,19 +643,29 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
   
   EmitInstruction(call);
   
-  if(!func->hasReturnValue && funcIndex == currentFunctionIndex) {
-    // Self-recursive call made while this function's own return kind isn't
-    // known yet (an unusual style where the recursive case is written before
-    // the base case) -- flagged so the definition can reject it if the kind
-    // later does resolve, since that would otherwise silently corrupt the stack.
-    functionSymbols[currentFunctionIndex].hadAmbiguousSelfCall = 1;
-  }
-  
   FunctionCallResult result = {0};
   
   result.next = LexerNext();
   result.hasReturnValue = func->hasReturnValue;
   result.returnType = func->returnType;
+  
+  if(!func->hasReturnValue && funcIndex == currentFunctionIndex) {
+    // Self-recursive call made while this function's own return kind isn't
+    // known yet (the recursive case is written before the base case). The
+    // call itself only transfers control -- OP_CALL doesn't push or expect
+    // any value -- the actual return value is pushed by whichever 'return'
+    // statement inside the function body runs, so it's safe to optimistically
+    // treat this call as producing a plain int/float/bool value: as long as
+    // the function's real return kind later resolves to exactly that, this
+    // guess was correct and nothing needs fixing up. Checked once the real
+    // kind is known, at the end of the definition, and rejected only if the
+    // guess turned out wrong (function ends up void, or returns a string).
+    functionSymbols[currentFunctionIndex].hadTentativeSelfCall = 1;
+    functionSymbols[currentFunctionIndex].tentativeSelfCallLine = nameToken.line;
+    
+    result.hasReturnValue = 1;
+    result.returnType = VAR_INT;
+  }
   
   return result;
 }
@@ -670,7 +726,7 @@ ExprResult ParseNumericIdentifier(Token token, Token afterName) {
       return result;
     }
     
-    if(!func->hasReturnValue || func->returnType == VAR_STR) {
+    if(!CanUseCallAsScalarValue(funcIndex, token.line)) {
       CompileError(token.line, "Function '%s' does not return a numeric/bool value", token.value);
     }
     
@@ -906,8 +962,7 @@ StringResult ParseStringValue(Token token) {
       inputInstr.sourceFromArgStack = prompt.sourceFromArgStack;
       inputInstr.sourceFromReturnedArrIndex = prompt.sourceFromReturnedArrIndex;
       
-      strncpy(inputInstr.stringLiteral, prompt.literal, INSTRUCTION_MAX_LEN - 1);
-      inputInstr.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+      inputInstr.stringLiteral = prompt.literal;
       
       result.next = prompt.next;
     } else {
@@ -925,8 +980,7 @@ StringResult ParseStringValue(Token token) {
   }
   
   if(token.type == TOKEN_LIT_STRING) {
-    strncpy(result.literal, token.value, INSTRUCTION_MAX_LEN - 1);
-    result.literal[INSTRUCTION_MAX_LEN - 1] = '\0';
+    result.literal = token.value;
     
     result.srcVarIndex = -1;
     result.next = LexerNext();
@@ -1241,8 +1295,7 @@ void EmitPushStringValue(StringResult value, int line) {
   push.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
   push.line = line;
   
-  strncpy(push.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-  push.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+  push.stringLiteral = value.literal;
   
   EmitInstruction(push);
 }
@@ -1759,8 +1812,7 @@ Token EmitElementStore(VarType varType, int varIndex, int destIsLocal, Token val
     store.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     store.line = valueToken.line;
     
-    strncpy(store.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-    store.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    store.stringLiteral = value.literal;
     
     EmitInstruction(store);
     
@@ -1934,8 +1986,7 @@ Token ParseVarDeclaration() {
     declareInstr.arraySize = arraySize;
     declareInstr.strSize = strSize;
     
-    strncpy(declareInstr.text, name.value, INSTRUCTION_MAX_LEN - 1);
-    declareInstr.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+    declareInstr.text = name.value;
     
     EmitInstruction(declareInstr);
     
@@ -2061,8 +2112,7 @@ Token ParseVarDeclaration() {
       broadcast.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
       broadcast.line = afterAssign.line;
       
-      strncpy(broadcast.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-      broadcast.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+      broadcast.stringLiteral = value.literal;
       
       EmitInstruction(broadcast);
       
@@ -2150,11 +2200,9 @@ Token ParseVarDeclaration() {
     instruction.sourceFromArgStack = value.sourceFromArgStack;
     instruction.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     
-    strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
-    instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+    instruction.text = name.value;
     
-    strncpy(instruction.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-    instruction.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    instruction.stringLiteral = value.literal;
     
     EmitInstruction(instruction);
     
@@ -2196,8 +2244,7 @@ Token ParseVarDeclaration() {
     instruction.storeNone = storeNone;
     instruction.propagateNone = propagateNone;
     
-    strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
-    instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+    instruction.text = name.value;
     
     EmitInstruction(instruction);
     
@@ -2250,8 +2297,7 @@ Token ParseVarDeclaration() {
   instruction.storeNone = storeNone;
   instruction.propagateNone = propagateNone;
   
-  strncpy(instruction.text, name.value, INSTRUCTION_MAX_LEN - 1);
-  instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+  instruction.text = name.value;
   
   EmitInstruction(instruction);
   
@@ -2480,8 +2526,7 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
     instruction.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     instruction.line = token.line;
     
-    strncpy(instruction.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-    instruction.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    instruction.stringLiteral = value.literal;
     
     EmitInstruction(instruction);
   } else if(varType == VAR_BOOL) {
@@ -2586,8 +2631,7 @@ Token ParsePrintStatement() {
     
     instruction.opcode = OP_PRINT;
     
-    strncpy(instruction.text, value.value, INSTRUCTION_MAX_LEN - 1);
-    instruction.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+    instruction.text = value.value;
     
     EmitInstruction(instruction);
     
@@ -2823,10 +2867,13 @@ Token ParsePrintStatement() {
 // natural left-to-right order (last argument ends up on top, so it must be
 // the first one bound). Returns the token after the closing ')'.
 Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
-  Token names[MAX_PARAMS];
-  int strSizes[MAX_PARAMS];
+  int localCapacity = 8;
+  Token* names = malloc(localCapacity * sizeof(Token));
+  int* strSizes = malloc(localCapacity * sizeof(int));
   
   if(afterParen.type == TOKEN_RPAREN) {
+    free(names);
+    free(strSizes);
     return LexerNext();
   }
   
@@ -2881,8 +2928,21 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
       CompileError(name.line, "Expected parameter name");
     }
     
-    if(func->paramCount >= MAX_PARAMS) {
-      CompileError(name.line, "Too many parameters (max %d)", MAX_PARAMS);
+    if(func->paramCount >= func->paramCapacity) {
+      func->paramCapacity = func->paramCapacity == 0 ? 8 : func->paramCapacity * 2;
+      
+      func->paramTypes = realloc(func->paramTypes, func->paramCapacity * sizeof(VarType));
+      func->paramVarIndex = realloc(func->paramVarIndex, func->paramCapacity * sizeof(int));
+      func->paramStrSize = realloc(func->paramStrSize, func->paramCapacity * sizeof(int));
+      func->paramIsArray = realloc(func->paramIsArray, func->paramCapacity * sizeof(int));
+      func->paramArraySize = realloc(func->paramArraySize, func->paramCapacity * sizeof(int));
+    }
+    
+    if(func->paramCount >= localCapacity) {
+      localCapacity *= 2;
+      
+      names = realloc(names, localCapacity * sizeof(Token));
+      strSizes = realloc(strSizes, localCapacity * sizeof(int));
     }
     
     // Optional "[size]" right after the name marks this as an array
@@ -2962,11 +3022,13 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
       declareInstr.srcVarIndex = -1;
     }
     
-    strncpy(declareInstr.text, names[i].value, INSTRUCTION_MAX_LEN - 1);
-    declareInstr.text[INSTRUCTION_MAX_LEN - 1] = '\0';
+    declareInstr.text = names[i].value;
     
     EmitInstruction(declareInstr);
   }
+  
+  free(names);
+  free(strSizes);
   
   return LexerNext();
 }
@@ -2987,8 +3049,9 @@ Token ParseFunctionDefinition(Token functionToken) {
     CompileError(name.line, "Function '%s' already declared", name.value);
   }
   
-  if(functionSymbolCount >= MAX_FUNCTIONS) {
-    CompileError(name.line, "Too many functions");
+  if(functionSymbolCount >= functionSymbolCapacity) {
+    functionSymbolCapacity = functionSymbolCapacity == 0 ? 16 : functionSymbolCapacity * 2;
+    functionSymbols = realloc(functionSymbols, functionSymbolCapacity * sizeof(FunctionSymbol));
   }
   
   Token lparen = LexerNext();
@@ -3076,14 +3139,23 @@ Token ParseFunctionDefinition(Token functionToken) {
   insideFunctionBody = 0;
   currentFunctionIndex = -1;
   
-  // Now that the function's return kind is fully known, reject it if an
-  // earlier self-recursive call was compiled while it still looked void --
-  // that call would be missing a value the real function now does push,
-  // corrupting the stack at runtime.
-  if(func->hasReturnValue && func->hadAmbiguousSelfCall) {
-    CompileError(name.line,
-      "Function '%s' calls itself before its first 'return' with a value; "
-      "put at least one 'return <value>;' before any recursive call", name.value);
+  // Now that the function's return kind is fully known, check whether any
+  // self-recursive call made earlier (while that kind wasn't known yet) was
+  // optimistically compiled as a plain int/float/bool value -- see
+  // ParseFunctionCallArgs. That guess was fine if the function does end up
+  // returning a plain value; it was wrong if the function turns out void
+  // (nothing was ever pushed to use) or returns a string (a different stack
+  // than the one that guess assumed), so those two cases are rejected here.
+  if(func->hadTentativeSelfCall) {
+    if(!func->hasReturnValue) {
+      CompileError(func->tentativeSelfCallLine,
+        "Function '%s' calls itself as if it returns a value, but never actually "
+        "returns one; add a 'return <value>;' or remove the recursive call", name.value);
+    } else if(func->returnType == VAR_STR) {
+      CompileError(func->tentativeSelfCallLine,
+        "Function '%s' returns a string, so its recursive call must come after "
+        "its first 'return \"...\";' with a value", name.value);
+    }
   }
   
   // Fix up any bare 'return;' compiled before the return kind was known
@@ -3164,9 +3236,12 @@ Token ParseReturnStatement(Token returnToken) {
       
       int idx = EmitInstruction(pushValue);
       
-      if(func->pendingBareReturnCount < 64) {
-        func->pendingBareReturns[func->pendingBareReturnCount++] = idx;
+      if(func->pendingBareReturnCount >= func->pendingBareReturnCapacity) {
+        func->pendingBareReturnCapacity = func->pendingBareReturnCapacity == 0 ? 8 : func->pendingBareReturnCapacity * 2;
+        func->pendingBareReturns = realloc(func->pendingBareReturns, func->pendingBareReturnCapacity * sizeof(int));
       }
+      
+      func->pendingBareReturns[func->pendingBareReturnCount++] = idx;
     }
     
     Instruction ret = {0};
@@ -3284,8 +3359,7 @@ Token ParseReturnStatement(Token returnToken) {
     pushValue.sourceFromReturnedArrIndex = value.sourceFromReturnedArrIndex;
     pushValue.line = returnToken.line;
     
-    strncpy(pushValue.stringLiteral, value.literal, INSTRUCTION_MAX_LEN - 1);
-    pushValue.stringLiteral[INSTRUCTION_MAX_LEN - 1] = '\0';
+    pushValue.stringLiteral = value.literal;
     
     EmitInstruction(pushValue);
   } else {
@@ -3301,6 +3375,11 @@ Token ParseReturnStatement(Token returnToken) {
       condResult = ParseNotExpr(afterReturn);
     } else if(isFunctionCallLookingAtLparen) {
       int funcIndex = FindFunction(afterReturn.value);
+      
+      if(funcIndex == -1) {
+        CompileError(afterReturn.line, "Undefined function \"%s\"", afterReturn.value);
+      }
+      
       FunctionCallResult call = ParseFunctionCallArgs(funcIndex, afterReturn);
       
       ExprResult numResult = {0};
@@ -3492,4 +3571,8 @@ void Compile() {
   halt.opcode = OP_HALT;
   
   EmitInstruction(halt);
+  
+  // Compilation is done, so the peak variable count is now final -- the VM
+  // uses this to size its own storage, instead of a fixed cap.
+  variableSlotCount = peakSymbolCount;
 }

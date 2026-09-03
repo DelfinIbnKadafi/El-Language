@@ -71,15 +71,18 @@ typedef enum {
   TOKEN_ERROR
 } TokenType;
 
-// Max length of token text data
+// Max length used only for fixed-size name buffers elsewhere (variable and
+// function names). Token text itself is unbounded -- see Token.value below.
 #define TOKEN_MAX_LEN 256
 
 // Store token information
 typedef struct {
   TokenType type;
   
-  // Token text data
-  char value[TOKEN_MAX_LEN];
+  // Token text data. Heap-allocated and grown as needed, so identifiers and
+  // string/number literals have no fixed length limit. NULL for token types
+  // that carry no text (keywords, operators, symbols).
+  char* value;
   
   // Source line where token was read
   int line;
@@ -93,5 +96,8 @@ void LexerInit(char* source);
 
 // Read next token
 Token LexerNext();
+
+// Copy a string onto the heap (stand-in for strdup, kept within -std=c99)
+char* DupString(const char* text);
 
 #endif

@@ -1,6 +1,28 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "lexer.h"
+
+// Copy a string onto the heap. Used instead of the non-standard strdup() to
+// stay within -std=c99.
+char* DupString(const char* text) {
+  char* copy = malloc(strlen(text) + 1);
+  
+  strcpy(copy, text);
+  
+  return copy;
+}
+
+// Append one character to a growable buffer, doubling capacity as needed.
+// Always leaves room for a trailing '\0' after the append.
+void AppendChar(char** buffer, int* capacity, int* length, char c) {
+  if(*length + 1 >= *capacity) {
+    *capacity *= 2;
+    *buffer = realloc(*buffer, *capacity);
+  }
+  
+  (*buffer)[(*length)++] = c;
+}
 
 // Current source code
 char* source;
@@ -38,6 +60,9 @@ void LexerInit(char* input) {
 
 Token LexerNext() {
   Token token;
+  
+  // Most token types carry no text; only set for literals/identifiers/errors
+  token.value = NULL;
   
   // Skip whitespace and comments
   while(1) {
@@ -94,7 +119,7 @@ Token LexerNext() {
       token.column = position - lineStart + 1;
       token.type = TOKEN_ERROR;
       
-      strcpy(token.value, "Unterminated comment");
+      token.value = DupString("Unterminated comment");
       return token;
     }
     
@@ -249,7 +274,7 @@ Token LexerNext() {
   if(strncmp(&source[position], "true", 4) == 0 && !IsWordChar(source[position + 4])) {
     position += 4;
     
-    strcpy(token.value, "1");
+    token.value = DupString("1");
     
     token.type = TOKEN_LIT_BOOL;
     return token;
@@ -258,20 +283,20 @@ Token LexerNext() {
   if(strncmp(&source[position], "false", 5) == 0 && !IsWordChar(source[position + 5])) {
     position += 5;
     
-    strcpy(token.value, "0");
+    token.value = DupString("0");
     
     token.type = TOKEN_LIT_BOOL;
     return token;
   }
   // Read number or float literal
   if(source[position] >= '0' && source[position] <= '9') {
+    int capacity = 32;
     int index = 0;
     int isFloat = 0;
+    char* buffer = malloc(capacity);
     
     while(source[position] >= '0' && source[position] <= '9') {
-      if(index < TOKEN_MAX_LEN - 1) {
-        token.value[index++] = source[position];
-      }
+      AppendChar(&buffer, &capacity, &index, source[position]);
       
       position++;
     }
@@ -281,22 +306,19 @@ Token LexerNext() {
        source[position + 1] >= '0' && source[position + 1] <= '9') {
       isFloat = 1;
       
-      if(index < TOKEN_MAX_LEN - 1) {
-        token.value[index++] = source[position];
-      }
+      AppendChar(&buffer, &capacity, &index, source[position]);
       
       position++;
       
       while(source[position] >= '0' && source[position] <= '9') {
-        if(index < TOKEN_MAX_LEN - 1) {
-          token.value[index++] = source[position];
-        }
+        AppendChar(&buffer, &capacity, &index, source[position]);
         
         position++;
       }
     }
     
-    token.value[index] = '\0';
+    buffer[index] = '\0';
+    token.value = buffer;
     
     token.type = isFloat ? TOKEN_LIT_FLOAT : TOKEN_LIT_NUMBER;
     return token;
@@ -305,18 +327,19 @@ Token LexerNext() {
   if(source[position] == '"') {
     position++;
     
+    int capacity = 32;
     int index = 0;
+    char* buffer = malloc(capacity);
     
     while(source[position] != '"' &&
           source[position] != '\0') {
-      if(index < TOKEN_MAX_LEN - 1) {
-        token.value[index++] = source[position];
-      }
+      AppendChar(&buffer, &capacity, &index, source[position]);
       
       position++;
     }
     
-    token.value[index] = '\0';
+    buffer[index] = '\0';
+    token.value = buffer;
     
     // Skip closing quote
     if(source[position] == '"') {
@@ -499,23 +522,25 @@ Token LexerNext() {
   
   // Read identifier (must come after all keyword checks above)
   if(IsWordChar(source[position])) {
+    int capacity = 32;
     int index = 0;
+    char* buffer = malloc(capacity);
     
     while(IsWordChar(source[position])) {
-      if(index < TOKEN_MAX_LEN - 1) {
-        token.value[index++] = source[position];
-      }
+      AppendChar(&buffer, &capacity, &index, source[position]);
       
       position++;
     }
     
-    token.value[index] = '\0';
+    buffer[index] = '\0';
+    token.value = buffer;
     
     token.type = TOKEN_IDENTIFIER;
     return token;
   }
   
   // Unknown character
+  token.value = malloc(32);
   sprintf(token.value, "Unexpected character '%c'", source[position]);
   
   token.type = TOKEN_ERROR;

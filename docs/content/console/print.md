@@ -1,0 +1,54 @@
+# print
+
+`print` writes a value to the console, followed by a new line.
+
+## Syntax
+
+```el
+print "Text";
+print variable;
+print expression;
+```
+
+## Examples
+
+Printing a literal string:
+
+```el
+print "Hello World!";
+```
+
+Printing a variable:
+
+```el
+var int age = 21;
+
+print age;
+```
+
+Printing an expression:
+
+```el
+print 1 + 10;
+```
+
+## Output Formatting
+
+| Type | Output |
+|---|---|
+| `int` | Plain integer, e.g. `9` |
+| `float` | Without trailing zeros, e.g. `3.5` |
+| `bool` | `true` or `false` |
+| `str` | The string's text |
+| any type set to `NONE` | `NONE` |
+
+## Notes
+
+- `print` can also print the direct result of a function call or an `input` prompt, e.g. `print factorial(5);` or `print input "Name: ";`.
+- Printing an array variable without an index is a compile-time error — index into the specific element you want, e.g. `print numbers[0];`. See [Arrays](content/arrays/arrays.md).
+
+## Related
+
+- [input](content/console/input.md)
+- [The NONE Value](content/none-value/none.md)
+- [Arrays](content/arrays/arrays.md)

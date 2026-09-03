@@ -1,3 +1,6 @@
+// Needed for getline() under -std=c99 (unlimited-length input reading)
+#define _POSIX_C_SOURCE 200809L
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,7 +11,11 @@
 // its '1' here while the recursive call runs), not just one per call depth.
 #define MAX_STACK 8192
 
-Variable variables[MAX_VARIABLES];
+// Peak number of variables simultaneously in scope anywhere in the compiled
+// program, set by main.c right before VMRun() -- see elvm.h.
+int variableSlotCount = 0;
+
+Variable* variables;
 int variableCount = 0;
 
 // Function-local variable slots. Unlike globals (above), a local slot's
@@ -16,7 +23,7 @@ int variableCount = 0;
 // CallFrame below) so that recursive calls each get their own independent
 // copy of a function's parameters and local variables. NULL until a call
 // currently has that slot allocated.
-Variable* localSlots[MAX_VARIABLES];
+Variable** localSlots;
 
 // One entry per currently-active function call (a real call stack), enabling
 // correct recursion: each call gets its own storage for whichever local slots
@@ -26,29 +33,59 @@ Variable* localSlots[MAX_VARIABLES];
 typedef struct {
   int returnAddress;
   
-  int savedSlots[MAX_VARIABLES];
-  Variable* savedPointers[MAX_VARIABLES];
+  int* savedSlots;
+  Variable** savedPointers;
   int savedCount;
   
   // Whether a given local slot has already been bound during this specific
   // call, so a declare instruction that re-runs (e.g. a var inside a loop
   // inside the function) reuses its own storage instead of re-registering.
-  int slotRegistered[MAX_VARIABLES];
+  int* slotRegistered;
 } CallFrame;
 
 CallFrame callStack[MAX_CALL_DEPTH];
 int callStackTop = 0;
 
+// Allocate every variable-slot-sized array now that variableSlotCount is
+// known (right after compilation, before the program actually runs).
+void InitVariableStorage() {
+  // At least 1 so a program with zero declared variables still gets valid,
+  // zero-length-safe allocations instead of malloc(0).
+  int count = variableSlotCount > 0 ? variableSlotCount : 1;
+  
+  variables = calloc(count, sizeof(Variable));
+  localSlots = calloc(count, sizeof(Variable*));
+  
+  for(int i = 0; i < MAX_CALL_DEPTH; i++) {
+    callStack[i].savedSlots = calloc(count, sizeof(int));
+    callStack[i].savedPointers = calloc(count, sizeof(Variable*));
+    callStack[i].slotRegistered = calloc(count, sizeof(int));
+  }
+}
+
 // String-value stack, used to pass string arguments into a function call and
 // to receive a function's string return value. A real stack (not a flat
 // array indexed by position) so nested calls -- e.g. a function call used as
 // the argument to another call -- nest correctly, the same way the numeric
-// eval stack already does for arithmetic.
+// eval stack already does for arithmetic. Each slot is heap-allocated and
+// sized to whatever text it actually holds, so a string value passing
+// through here has no fixed length limit.
 #define MAX_STRING_STACK 1024
 
-char stringValueStack[MAX_STRING_STACK][INSTRUCTION_MAX_LEN];
+char* stringValueStack[MAX_STRING_STACK];
 int stringValueStackIsNone[MAX_STRING_STACK];
 int stringValueStackTop = 0;
+
+// Push a copy of 'text' onto the string-value stack, replacing whatever
+// (if anything) previously occupied that slot.
+void PushStringValue(const char* text) {
+  free(stringValueStack[stringValueStackTop]);
+  
+  stringValueStack[stringValueStackTop] = malloc(strlen(text) + 1);
+  strcpy(stringValueStack[stringValueStackTop], text);
+  
+  stringValueStackTop++;
+}
 
 // Holds an array a function just returned, until whatever the caller does
 // with it (assign into a real variable, index once, or ignore it) consumes
@@ -192,12 +229,12 @@ void AllocateStringStorage(Variable* v, int size, int strSize, int line) {
 }
 
 // Free the dynamically allocated storage of every declared variable, called
-// once the program finishes running. Iterates over the fixed MAX_VARIABLES
+// once the program finishes running. Iterates over the variableSlotCount
 // bound (not variableCount, which can be inflated by a var declaration that
 // sits inside a loop body and therefore runs more than once) and skips any
 // slot that was never actually allocated.
 void FreeAllVariables() {
-  for(int i = 0; i < MAX_VARIABLES; i++) {
+  for(int i = 0; i < variableSlotCount; i++) {
     if(variables[i].numbers == NULL && variables[i].strings == NULL) {
       continue;
     }
@@ -224,15 +261,17 @@ void FreeAllVariables() {
 // the stack when srcIsArray is set). Must be called before popping any
 // destination index: a variable source's array index, if any, was pushed
 // after it and therefore sits on top of the stack.
-void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* outIsNone) {
+//
+// Returns a freshly heap-allocated, unbounded copy of the source text --
+// the caller owns it and must free it. A destination with a smaller strSize
+// (e.g. storing into a str[5] variable) truncates its own copy afterward;
+// the value resolved here is never truncated up front.
+char* ResolveStoreSource(Instruction instruction, int* outIsNone) {
   if(instruction.sourceFromArgStack) {
     stringValueStackTop--;
     
-    strncpy(out, stringValueStack[stringValueStackTop], outSize);
-    out[outSize] = '\0';
-    
     *outIsNone = stringValueStackIsNone[stringValueStackTop];
-    return;
+    return DupString(stringValueStack[stringValueStackTop]);
   }
   
   if(instruction.sourceFromReturnedArrIndex) {
@@ -241,22 +280,17 @@ void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* ou
     
     int idx = CheckBounds(Pop(), src->arraySize, instruction.line);
     
-    strncpy(out, src->strings[idx], outSize);
-    out[outSize] = '\0';
-    
     *outIsNone = src->isNone[idx];
+    char* result = DupString(src->strings[idx]);
     
     FreeVariableStorage(src);
     free(src);
-    return;
+    return result;
   }
   
   if(instruction.srcVarIndex == -1) {
-    strncpy(out, instruction.stringLiteral, outSize);
-    out[outSize] = '\0';
-    
     *outIsNone = 0;
-    return;
+    return DupString(instruction.stringLiteral);
   }
   
   Variable* srcV = ResolveVariable(instruction.srcVarIndex, instruction.srcIsLocal);
@@ -266,11 +300,10 @@ void ResolveStoreSource(Instruction instruction, char* out, int outSize, int* ou
     srcIdx = CheckBounds(Pop(), srcV->arraySize, instruction.line);
   }
   
-  strncpy(out, srcV->strings[srcIdx], outSize);
-  out[outSize] = '\0';
-  
   *outIsNone = srcV->isNone[srcIdx];
+  return DupString(srcV->strings[srcIdx]);
 }
+
 
 // Enter a new function call: remember where to resume once it returns.
 // Local-slot storage is bound lazily as each parameter/var declare
@@ -286,7 +319,7 @@ void PushCallFrame(int returnAddress, int line) {
   frame->returnAddress = returnAddress;
   frame->savedCount = 0;
   
-  for(int i = 0; i < MAX_VARIABLES; i++) {
+  for(int i = 0; i < variableSlotCount; i++) {
     frame->slotRegistered[i] = 0;
   }
 }
@@ -335,6 +368,8 @@ void VMRun(Instruction* code, int count, char* filename) {
   int ip = 0;
   
   currentFilename = filename;
+  
+  InitVariableStorage();
   
   while(ip < count) {
     Instruction instruction = code[ip++];
@@ -475,7 +510,11 @@ void VMRun(Instruction* code, int count, char* filename) {
           // via sourceFromArgStack inside ResolveStoreSource)
           int isNone = 0;
           
-          ResolveStoreSource(instruction, v->strings[0], strSize, &isNone);
+          char* value = ResolveStoreSource(instruction, &isNone);
+          
+          strncpy(v->strings[0], value, strSize);
+          v->strings[0][strSize] = '\0';
+          free(value);
           
           v->isNone[0] = isNone;
         }
@@ -511,19 +550,12 @@ void VMRun(Instruction* code, int count, char* filename) {
           // Resolve the source (and pop its index, if it's an array element)
           // BEFORE popping the destination index: the source index, if any,
           // was pushed after the destination index and sits on top of it.
-          // The intermediate buffer is sized to the destination's own strSize,
-          // since text is truncated to fit the destination anyway.
+          // The result is truncated to fit the destination's own strSize
+          // afterward -- resolving itself is never truncated up front.
           int maxLen = v->strSize;
-          char* buffer = malloc(maxLen + 1);
-          
-          if(buffer == NULL) {
-            printf("%s (%d) : Failed to allocate string buffer\n", currentFilename, instruction.line);
-            exit(1);
-          }
-          
           int isNone = 0;
           
-          ResolveStoreSource(instruction, buffer, maxLen, &isNone);
+          char* value = ResolveStoreSource(instruction, &isNone);
           
           int destIdx = 0;
           
@@ -531,12 +563,12 @@ void VMRun(Instruction* code, int count, char* filename) {
             destIdx = CheckBounds(Pop(), v->arraySize, instruction.line);
           }
           
-          strncpy(v->strings[destIdx], buffer, maxLen);
+          strncpy(v->strings[destIdx], value, maxLen);
           v->strings[destIdx][maxLen] = '\0';
           
           v->isNone[destIdx] = isNone;
           
-          free(buffer);
+          free(value);
         }
         break;
       }
@@ -599,21 +631,17 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_BROADCAST_STR_ARR: {
         Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
         
-        // Fill every element of a string array with the same text, resolved once.
+        // Fill every element of a string array with the same text, resolved
+        // once and truncated to the array's own strSize.
         int maxLen = v->strSize;
-        char* buffer = malloc(maxLen + 1);
+        char* buffer;
         int noneFlag;
         
-        if(buffer == NULL) {
-          printf("%s (%d) : Failed to allocate string buffer\n", currentFilename, instruction.line);
-          exit(1);
-        }
-        
         if(instruction.storeNone) {
-          buffer[0] = '\0';
+          buffer = DupString("");
           noneFlag = 1;
         } else {
-          ResolveStoreSource(instruction, buffer, maxLen, &noneFlag);
+          buffer = ResolveStoreSource(instruction, &noneFlag);
         }
         
         int size = v->arraySize;
@@ -913,10 +941,8 @@ void VMRun(Instruction* code, int count, char* filename) {
           exit(1);
         }
         
-        strncpy(stringValueStack[stringValueStackTop], src->strings[idx], INSTRUCTION_MAX_LEN - 1);
-        stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
-        stringValueStackIsNone[stringValueStackTop] = src->isNone[idx];
-        stringValueStackTop++;
+        PushStringValue(src->strings[idx]);
+        stringValueStackIsNone[stringValueStackTop - 1] = src->isNone[idx];
         
         FreeVariableStorage(src);
         free(src);
@@ -939,16 +965,19 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         
         if(instruction.storeNone) {
-          stringValueStack[stringValueStackTop][0] = '\0';
-          stringValueStackIsNone[stringValueStackTop] = 1;
+          PushStringValue("");
+          stringValueStackIsNone[stringValueStackTop - 1] = 1;
         } else {
           int isNone = 0;
           
-          ResolveStoreSource(instruction, stringValueStack[stringValueStackTop], INSTRUCTION_MAX_LEN - 1, &isNone);
-          stringValueStackIsNone[stringValueStackTop] = isNone;
+          char* value = ResolveStoreSource(instruction, &isNone);
+          
+          PushStringValue(value);
+          stringValueStackIsNone[stringValueStackTop - 1] = isNone;
+          
+          free(value);
         }
         
-        stringValueStackTop++;
         break;
       }
       case OP_POP_STRING_VALUE:
@@ -964,11 +993,8 @@ void VMRun(Instruction* code, int count, char* filename) {
           exit(1);
         }
         
-        strncpy(stringValueStack[stringValueStackTop], stringValueStack[stringValueStackTop - 1], INSTRUCTION_MAX_LEN - 1);
-        stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
-        stringValueStackIsNone[stringValueStackTop] = stringValueStackIsNone[stringValueStackTop - 1];
-        
-        stringValueStackTop++;
+        PushStringValue(stringValueStack[stringValueStackTop - 1]);
+        stringValueStackIsNone[stringValueStackTop - 1] = stringValueStackIsNone[stringValueStackTop - 2];
         break;
       }
       case OP_PUSH_ARR_ELEMENT_TO_STAGE: {
@@ -991,11 +1017,8 @@ void VMRun(Instruction* code, int count, char* filename) {
           exit(1);
         }
         
-        strncpy(stringValueStack[stringValueStackTop], v->strings[instruction.elementIndex], INSTRUCTION_MAX_LEN - 1);
-        stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
-        stringValueStackIsNone[stringValueStackTop] = v->isNone[instruction.elementIndex];
-        
-        stringValueStackTop++;
+        PushStringValue(v->strings[instruction.elementIndex]);
+        stringValueStackIsNone[stringValueStackTop - 1] = v->isNone[instruction.elementIndex];
         break;
       }
       case OP_PRINT_STRING_VALUE: {
@@ -1010,10 +1033,9 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_INPUT_STR: {
         if(instruction.hasPrompt) {
-          char prompt[INSTRUCTION_MAX_LEN];
           int promptIsNone = 0;
           
-          ResolveStoreSource(instruction, prompt, INSTRUCTION_MAX_LEN - 1, &promptIsNone);
+          char* prompt = ResolveStoreSource(instruction, &promptIsNone);
           
           // No trailing newline on purpose, so the person types right after
           // the prompt on the same line, same feel as most other languages'
@@ -1023,6 +1045,8 @@ void VMRun(Instruction* code, int count, char* filename) {
           // ever became visible.
           printf("%s", promptIsNone ? "NONE" : prompt);
           fflush(stdout);
+          
+          free(prompt);
         }
         
         if(stringValueStackTop >= MAX_STRING_STACK) {
@@ -1030,21 +1054,23 @@ void VMRun(Instruction* code, int count, char* filename) {
           exit(1);
         }
         
-        char line[INSTRUCTION_MAX_LEN];
+        // getline grows its own buffer as needed, so a typed line has no
+        // fixed length limit.
+        char* line = NULL;
+        size_t lineCapacity = 0;
         
-        if(fgets(line, INSTRUCTION_MAX_LEN, stdin) == NULL) {
+        if(getline(&line, &lineCapacity, stdin) == -1) {
           // EOF or a read error: nothing meaningful was entered
-          stringValueStack[stringValueStackTop][0] = '\0';
-          stringValueStackIsNone[stringValueStackTop] = 1;
+          PushStringValue("");
+          stringValueStackIsNone[stringValueStackTop - 1] = 1;
         } else {
           line[strcspn(line, "\r\n")] = '\0';
           
-          strncpy(stringValueStack[stringValueStackTop], line, INSTRUCTION_MAX_LEN - 1);
-          stringValueStack[stringValueStackTop][INSTRUCTION_MAX_LEN - 1] = '\0';
-          stringValueStackIsNone[stringValueStackTop] = 0;
+          PushStringValue(line);
+          stringValueStackIsNone[stringValueStackTop - 1] = 0;
         }
         
-        stringValueStackTop++;
+        free(line);
         break;
       }
       case OP_HALT:
