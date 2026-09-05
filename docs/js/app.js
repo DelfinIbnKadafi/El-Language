@@ -1,7 +1,7 @@
 import { createHighlighter } from "https://esm.sh/shiki@1.24.0";
 
 const NAV_CONFIG_PATH = "content.json";
-const EL_GRAMMAR_PATH = "assets/el.tmLanguage.json";
+const EL_GRAMMAR_PATH = "https://raw.githubusercontent.com/DelfinIbnKadafi/El-Language/main/el.tmlanguage.json";
 const HOME_PATH = "content/getting-started/welcome.md";
 
 const sidebarEl = document.getElementById("sidebar-content");
