@@ -78,6 +78,10 @@
           "match": "\\b(input)\\b"
         },
         {
+          "name": "keyword.other.format.ellang",
+          "match": "\\b(format)\\b"
+        },
+        {
           "name": "storage.type.var.ellang",
           "match": "\\b(var)\\b"
         },
@@ -115,6 +119,11 @@
         {
           "name": "constant.character.escape.ellang",
           "match": "\\\\."
+        },
+        {
+          "comment": "format() / print \"..\", args / input \"..\", args specifiers",
+          "name": "constant.other.placeholder.ellang",
+          "match": "%[sdfb%]"
         }
       ]
     },
