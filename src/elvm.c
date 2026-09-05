@@ -15,6 +15,9 @@
 // program, set by main.c right before VMRun() -- see elvm.h.
 int variableSlotCount = 0;
 
+// Source filename, used for error messages
+char* currentFilename;
+
 Variable* variables;
 int variableCount = 0;
 
@@ -87,6 +90,194 @@ void PushStringValue(const char* text) {
   stringValueStackTop++;
 }
 
+// One argument collected for a format() call (or the print/input sugar that
+// builds on the same mechanism). Values are read straight off the numeric or
+// string eval stack, in argument order, by OP_FORMAT_ARG -- see below.
+typedef struct {
+  VarType type;
+  double numberValue;    // meaningful for INT/FLOAT/BOOL
+  int isNone;
+  char* stringValue;     // meaningful for STR, heap-allocated
+} FormatArg;
+
+// One in-progress format() call's argument list. A real stack (not a single
+// list) so a format() call nested inside another format() call's arguments
+// builds its own list without disturbing the outer one, the same reasoning
+// as stringValueStack/returnedArrStack above.
+typedef struct {
+  FormatArg* args;
+  int count;
+  int capacity;
+} FormatArgList;
+
+#define MAX_FORMAT_NESTING 64
+
+FormatArgList formatArgListStack[MAX_FORMAT_NESTING];
+int formatArgListTop = 0;
+
+// Start collecting arguments for a new format() call.
+void BeginFormatArgs() {
+  FormatArgList* list = &formatArgListStack[formatArgListTop++];
+  
+  list->count = 0;
+  list->capacity = 0;
+  list->args = NULL;
+}
+
+// Append one already-evaluated argument to the current (innermost) format()
+// call's argument list, growing it as needed -- no fixed cap on argument count.
+void PushFormatArg(VarType type, double numberValue, int isNone, const char* stringValue) {
+  FormatArgList* list = &formatArgListStack[formatArgListTop - 1];
+  
+  if(list->count >= list->capacity) {
+    list->capacity = list->capacity == 0 ? 8 : list->capacity * 2;
+    list->args = realloc(list->args, list->capacity * sizeof(FormatArg));
+  }
+  
+  FormatArg* slot = &list->args[list->count++];
+  
+  slot->type = type;
+  slot->numberValue = numberValue;
+  slot->isNone = isNone;
+  slot->stringValue = stringValue != NULL ? DupString(stringValue) : NULL;
+}
+
+// Free an argument list's own storage (not the list struct itself, which
+// lives inline in formatArgListStack).
+void FreeFormatArgList(FormatArgList* list) {
+  for(int i = 0; i < list->count; i++) {
+    free(list->args[i].stringValue);
+  }
+  
+  free(list->args);
+}
+
+// Format one value according to a single %s/%d/%f/%b specifier, appending
+// the result to a dynamically growing output buffer.
+void AppendFormattedArg(char** out, int* outCap, int* outLen, char specifier, FormatArg arg, int line) {
+  char piece[64];
+  
+  if(specifier == 's') {
+    if(arg.type != VAR_STR) {
+      printf("%s (%d) : Format specifier %%s expects a string argument\n", currentFilename, line);
+      exit(1);
+    }
+    
+    const char* text = arg.isNone ? "NONE" : arg.stringValue;
+    
+    while(*out == NULL || *outLen + (int) strlen(text) + 1 >= *outCap) {
+      *outCap = *outCap == 0 ? 64 : *outCap * 2;
+      *out = realloc(*out, *outCap);
+    }
+    
+    strcpy(*out + *outLen, text);
+    *outLen += strlen(text);
+    return;
+  }
+  
+  if(specifier == 'b') {
+    if(arg.type != VAR_BOOL) {
+      printf("%s (%d) : Format specifier %%b expects a boolean argument\n", currentFilename, line);
+      exit(1);
+    }
+    
+    strcpy(piece, arg.isNone ? "NONE" : (arg.numberValue != 0 ? "true" : "false"));
+  } else if(specifier == 'd') {
+    if(arg.type != VAR_INT && arg.type != VAR_FLOAT) {
+      printf("%s (%d) : Format specifier %%d expects an int or float argument\n", currentFilename, line);
+      exit(1);
+    }
+    
+    if(arg.isNone) {
+      strcpy(piece, "NONE");
+    } else {
+      sprintf(piece, "%d", (int) arg.numberValue);
+    }
+  } else if(specifier == 'f') {
+    if(arg.type != VAR_INT && arg.type != VAR_FLOAT) {
+      printf("%s (%d) : Format specifier %%f expects an int or float argument\n", currentFilename, line);
+      exit(1);
+    }
+    
+    if(arg.isNone) {
+      strcpy(piece, "NONE");
+    } else {
+      sprintf(piece, "%g", arg.numberValue);
+    }
+  } else {
+    printf("%s (%d) : Unknown format specifier %%%c\n", currentFilename, line, specifier);
+    exit(1);
+  }
+  
+  while(*out == NULL || *outLen + (int) strlen(piece) + 1 >= *outCap) {
+    *outCap = *outCap == 0 ? 64 : *outCap * 2;
+    *out = realloc(*out, *outCap);
+  }
+  
+  strcpy(*out + *outLen, piece);
+  *outLen += strlen(piece);
+}
+
+// Walk a format string left to right, copying literal text through as-is and
+// substituting each %s/%d/%f/%b with the next argument from 'list', in
+// order. "%%" is an escape for a literal '%'. Returns a freshly heap
+// allocated, unbounded result -- caller owns it and must free it.
+char* BuildFormattedString(const char* fmt, FormatArgList* list, int line) {
+  char* out = NULL;
+  int outCap = 0;
+  int outLen = 0;
+  int argIndex = 0;
+  
+  for(int i = 0; fmt[i] != '\0'; i++) {
+    if(fmt[i] == '%' && fmt[i + 1] == '%') {
+      char percent[2] = "%";
+      
+      while(out == NULL || outLen + 2 >= outCap) {
+        outCap = outCap == 0 ? 64 : outCap * 2;
+        out = realloc(out, outCap);
+      }
+      
+      strcpy(out + outLen, percent);
+      outLen += 1;
+      i++;
+      continue;
+    }
+    
+    if(fmt[i] == '%' && (fmt[i + 1] == 's' || fmt[i + 1] == 'd' || fmt[i + 1] == 'f' || fmt[i + 1] == 'b')) {
+      if(argIndex >= list->count) {
+        printf("%s (%d) : Format string expects more arguments than were given\n", currentFilename, line);
+        exit(1);
+      }
+      
+      AppendFormattedArg(&out, &outCap, &outLen, fmt[i + 1], list->args[argIndex], line);
+      argIndex++;
+      i++;
+      continue;
+    }
+    
+    char single[2] = {fmt[i], '\0'};
+    
+    while(out == NULL || outLen + 2 >= outCap) {
+      outCap = outCap == 0 ? 64 : outCap * 2;
+      out = realloc(out, outCap);
+    }
+    
+    strcpy(out + outLen, single);
+    outLen += 1;
+  }
+  
+  if(argIndex < list->count) {
+    printf("%s (%d) : Format string was given more arguments than it uses\n", currentFilename, line);
+    exit(1);
+  }
+  
+  if(out == NULL) {
+    out = DupString("");
+  }
+  
+  return out;
+}
+
 // Holds an array a function just returned, until whatever the caller does
 // with it (assign into a real variable, index once, or ignore it) consumes
 // it. A real stack, not a single slot, so a returned array used as part of
@@ -101,9 +292,6 @@ int returnedArrStackTop = 0;
 // Evaluation stack, used for numeric expression math (int, float, bool, comparisons, indices)
 double stack[MAX_STACK];
 int stackTop = 0;
-
-// Current running file, used for runtime error messages
-char* currentFilename;
 
 // NONE status of the value most recently pushed by OP_PUSH_VAR / OP_PUSH_ARR,
 // used to implement "== NONE" checks and bare "x = y;" NONE propagation
@@ -1071,6 +1259,158 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         
         free(line);
+        break;
+      }
+      case OP_FORMAT_ARG_BEGIN: {
+        if(formatArgListTop >= MAX_FORMAT_NESTING) {
+          printf("%s (%d) : Stack overflow: too many nested format() calls\n", currentFilename, instruction.line);
+          exit(1);
+        }
+        
+        BeginFormatArgs();
+        break;
+      }
+      case OP_FORMAT_ARG: {
+        if(instruction.valueType == VAR_STR) {
+          stringValueStackTop--;
+          
+          PushFormatArg(VAR_STR, 0, stringValueStackIsNone[stringValueStackTop], stringValueStack[stringValueStackTop]);
+        } else {
+          double value = Pop();
+          int isNone = instruction.propagateNone ? lastPushedIsNone : 0;
+          
+          PushFormatArg(instruction.valueType, value, isNone, NULL);
+        }
+        break;
+      }
+      case OP_FORMAT_STRING: {
+        int fmtIsNone = 0;
+        char* fmt = ResolveStoreSource(instruction, &fmtIsNone);
+        
+        FormatArgList* list = &formatArgListStack[formatArgListTop - 1];
+        
+        char* result = fmtIsNone ? DupString("NONE") : BuildFormattedString(fmt, list, instruction.line);
+        
+        FreeFormatArgList(list);
+        formatArgListTop--;
+        
+        PushStringValue(result);
+        stringValueStackIsNone[stringValueStackTop - 1] = 0;
+        
+        free(fmt);
+        free(result);
+        break;
+      }
+      case OP_SCAN_STRING: {
+        int fmtIsNone = 0;
+        char* fmt = ResolveStoreSource(instruction, &fmtIsNone);
+        
+        char* line = NULL;
+        size_t lineCapacity = 0;
+        int gotLine = getline(&line, &lineCapacity, stdin) != -1;
+        
+        if(gotLine) {
+          line[strcspn(line, "\r\n")] = '\0';
+        }
+        
+        // Split the read line into whitespace-delimited tokens.
+        int tokenCount = 0;
+        int tokenCapacity = 8;
+        char** tokens = malloc(tokenCapacity * sizeof(char*));
+        
+        if(gotLine) {
+          int i = 0;
+          
+          while(line[i] != '\0') {
+            while(line[i] == ' ' || line[i] == '\t') {
+              i++;
+            }
+            
+            if(line[i] == '\0') {
+              break;
+            }
+            
+            int start = i;
+            
+            while(line[i] != '\0' && line[i] != ' ' && line[i] != '\t') {
+              i++;
+            }
+            
+            if(tokenCount >= tokenCapacity) {
+              tokenCapacity *= 2;
+              tokens = realloc(tokens, tokenCapacity * sizeof(char*));
+            }
+            
+            int len = i - start;
+            
+            tokens[tokenCount] = malloc(len + 1);
+            memcpy(tokens[tokenCount], &line[start], len);
+            tokens[tokenCount][len] = '\0';
+            tokenCount++;
+          }
+        }
+        
+        // Walk the format string for specifiers, assigning one token per
+        // specifier into the matching destination variable, in order. A
+        // destination with no token left to fill it becomes NONE, matching
+        // how a declared-but-unassigned variable behaves everywhere else.
+        int specifierIndex = 0;
+        int fmtLen = fmtIsNone ? 0 : (int) strlen(fmt);
+        
+        for(int i = 0; i < fmtLen && specifierIndex < instruction.scanVarCount; i++) {
+          if(fmt[i] != '%' || (fmt[i + 1] != 's' && fmt[i + 1] != 'd' && fmt[i + 1] != 'f' && fmt[i + 1] != 'b')) {
+            continue;
+          }
+          
+          char specifier = fmt[i + 1];
+          i++;
+          
+          Variable* dest = ResolveVariable(instruction.scanVarIndex[specifierIndex], instruction.scanVarIsLocal[specifierIndex]);
+          int haveToken = specifierIndex < tokenCount;
+          
+          if(specifier == 's') {
+            if(haveToken) {
+              strncpy(dest->strings[0], tokens[specifierIndex], dest->strSize);
+              dest->strings[0][dest->strSize] = '\0';
+              dest->isNone[0] = 0;
+            } else {
+              dest->isNone[0] = 1;
+            }
+          } else if(specifier == 'b') {
+            if(haveToken) {
+              dest->numbers[0] = strcmp(tokens[specifierIndex], "true") == 0 ? 1 : 0;
+              dest->isNone[0] = 0;
+            } else {
+              dest->isNone[0] = 1;
+            }
+          } else {
+            if(haveToken) {
+              dest->numbers[0] = atof(tokens[specifierIndex]);
+              dest->isNone[0] = 0;
+            } else {
+              dest->isNone[0] = 1;
+            }
+          }
+          
+          specifierIndex++;
+        }
+        
+        // Any destination beyond what the format string had specifiers for
+        // (only possible if the format string wasn't a literal, so this
+        // couldn't be caught at compile time) becomes NONE too.
+        for(; specifierIndex < instruction.scanVarCount; specifierIndex++) {
+          Variable* dest = ResolveVariable(instruction.scanVarIndex[specifierIndex], instruction.scanVarIsLocal[specifierIndex]);
+          
+          dest->isNone[0] = 1;
+        }
+        
+        for(int i = 0; i < tokenCount; i++) {
+          free(tokens[i]);
+        }
+        
+        free(tokens);
+        free(line);
+        free(fmt);
         break;
       }
       case OP_HALT:

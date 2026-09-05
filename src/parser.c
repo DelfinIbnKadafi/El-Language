@@ -338,9 +338,16 @@ CondResult ParseOrExprTail(CondResult left);
 Token ParseStatement(Token token);
 Token ParseIdentifierStatement(Token token, TokenType terminator);
 StringResult ParseStringValue(Token token);
+StringResult ParseInputExpr(Token token, Token afterInput);
+StringResult ParseStringIdentifier(Token token, Token afterName);
 BoolResult ParseBoolValue(Token token);
+BoolResult ParseBoolIdentifier(Token token, Token afterName);
 FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken);
 Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, Token token);
+VarType ParseAndEmitFormatArgument(Token token, Token* outNext);
+Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, TokenType terminator);
+StringResult ParseFormatCall(Token formatToken);
+Token ParseScanInputStatement(Token fmtToken);
 
 // Parse an optional array index following an identifier that resolves to symbol
 // 'symbolIndex'. 'nameToken' identifies the variable for error messages, and
@@ -937,46 +944,7 @@ StringResult ParseStringValue(Token token) {
   }
   
   if(token.type == TOKEN_KW_INPUT) {
-    Token afterInput = LexerNext();
-    
-    // Bare "input" (no prompt) is only valid right before whatever token
-    // would end the expression in the surrounding context -- a statement's
-    // ";", a function argument list's "," or ")", or a list literal's "]".
-    // Anything else is the start of a prompt expression instead.
-    int hasPrompt = !(afterInput.type == TOKEN_SEMICOLON || afterInput.type == TOKEN_COMMA ||
-                       afterInput.type == TOKEN_RPAREN || afterInput.type == TOKEN_RBRACKET);
-    
-    Instruction inputInstr = {0};
-    
-    inputInstr.opcode = OP_INPUT_STR;
-    inputInstr.line = token.line;
-    inputInstr.hasPrompt = hasPrompt;
-    
-    if(hasPrompt) {
-      StringResult prompt = ParseStringValue(afterInput);
-      
-      inputInstr.storeNone = prompt.isNoneLiteral;
-      inputInstr.srcVarIndex = prompt.srcVarIndex;
-      inputInstr.srcIsArray = prompt.srcIsArray;
-      inputInstr.srcIsLocal = prompt.srcIsLocal;
-      inputInstr.sourceFromArgStack = prompt.sourceFromArgStack;
-      inputInstr.sourceFromReturnedArrIndex = prompt.sourceFromReturnedArrIndex;
-      
-      inputInstr.stringLiteral = prompt.literal;
-      
-      result.next = prompt.next;
-    } else {
-      result.next = afterInput;
-    }
-    
-    EmitInstruction(inputInstr);
-    
-    // The line just read now sits on top of stringValueStack, same as a
-    // string-returning function call -- consumers pop it the same way.
-    result.srcVarIndex = -1;
-    result.sourceFromArgStack = 1;
-    
-    return result;
+    return ParseInputExpr(token, LexerNext());
   }
   
   if(token.type == TOKEN_LIT_STRING) {
@@ -988,78 +956,142 @@ StringResult ParseStringValue(Token token) {
     return result;
   }
   
+  if(token.type == TOKEN_KW_FORMAT) {
+    return ParseFormatCall(token);
+  }
+  
   if(token.type == TOKEN_IDENTIFIER) {
-    Token afterName = LexerNext();
+    return ParseStringIdentifier(token, LexerNext());
+  }
+  
+  CompileError(token.line, "Expected string value");
+}
+
+// Handles "input" (used as a value): a bare input; with no prompt, or a
+// prompt that's itself resolved like any other string source (literal,
+// variable, format(), or nested input). Split out from ParseStringValue,
+// taking an already-peeked lookahead token, exactly like ParseStringIdentifier
+// -- lets the input statement form check for the newer scan sugar
+// ("input "<fmt>", var1, var2;") before committing to this ordinary parsing.
+StringResult ParseInputExpr(Token token, Token afterInput) {
+  StringResult result = {0};
+  
+  // Bare "input" (no prompt) is only valid right before whatever token
+  // would end the expression in the surrounding context -- a statement's
+  // ";", a function argument list's "," or ")", or a list literal's "]".
+  // Anything else is the start of a prompt expression instead.
+  int hasPrompt = !(afterInput.type == TOKEN_SEMICOLON || afterInput.type == TOKEN_COMMA ||
+                     afterInput.type == TOKEN_RPAREN || afterInput.type == TOKEN_RBRACKET);
+  
+  Instruction inputInstr = {0};
+  
+  inputInstr.opcode = OP_INPUT_STR;
+  inputInstr.line = token.line;
+  inputInstr.hasPrompt = hasPrompt;
+  
+  if(hasPrompt) {
+    StringResult prompt = ParseStringValue(afterInput);
     
-    if(afterName.type == TOKEN_LPAREN) {
-      int funcIndex = FindFunction(token.value);
-      
-      if(funcIndex == -1) {
-        CompileError(token.line, "Undefined function \"%s\"", token.value);
-      }
-      
-      FunctionSymbol* func = &functionSymbols[funcIndex];
-      
-      if(func->hasReturnValue && func->returnsArray) {
-        if(func->returnType != VAR_STR) {
-          CompileError(token.line, "Function '%s' does not return a string value", token.value);
-        }
-        
-        FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
-        
-        if(call.next.type != TOKEN_LBRACKET) {
-          CompileError(call.next.line, "Function '%s' returns an array and must be indexed, e.g. %s()[0]", token.value, token.value);
-        }
-        
-        ExprResult idxExpr = ParseNumericExpression(LexerNext());
-        
-        if(idxExpr.type != VAR_INT) {
-          CompileError(token.line, "Array index must be an int");
-        }
-        
-        if(idxExpr.next.type != TOKEN_RBRACKET) {
-          CompileError(idxExpr.next.line, "Expected ]");
-        }
-        
-        result.next = LexerNext();
-        result.srcVarIndex = -1;
-        result.sourceFromReturnedArrIndex = 1;
-        
-        return result;
-      }
-      
-      if(!func->hasReturnValue || func->returnType != VAR_STR) {
+    inputInstr.storeNone = prompt.isNoneLiteral;
+    inputInstr.srcVarIndex = prompt.srcVarIndex;
+    inputInstr.srcIsArray = prompt.srcIsArray;
+    inputInstr.srcIsLocal = prompt.srcIsLocal;
+    inputInstr.sourceFromArgStack = prompt.sourceFromArgStack;
+    inputInstr.sourceFromReturnedArrIndex = prompt.sourceFromReturnedArrIndex;
+    
+    inputInstr.stringLiteral = prompt.literal;
+    
+    result.next = prompt.next;
+  } else {
+    result.next = afterInput;
+  }
+  
+  EmitInstruction(inputInstr);
+  
+  // The line just read now sits on top of stringValueStack, same as a
+  // string-returning function call -- consumers pop it the same way.
+  result.srcVarIndex = -1;
+  result.sourceFromArgStack = 1;
+  
+  return result;
+}
+
+// Handles a string value starting with an identifier: a string-returning
+// function call (afterName is '(') or an existing string variable/array
+// element. Split out from ParseStringValue, taking an already-peeked
+// lookahead token, exactly like ParseNumericIdentifier -- so other code that
+// also needs one token of lookahead to tell a call from a variable (e.g.
+// format() argument type detection) can reuse this directly instead of
+// re-reading the same token twice.
+StringResult ParseStringIdentifier(Token token, Token afterName) {
+  StringResult result = {0};
+  
+  if(afterName.type == TOKEN_LPAREN) {
+    int funcIndex = FindFunction(token.value);
+    
+    if(funcIndex == -1) {
+      CompileError(token.line, "Undefined function \"%s\"", token.value);
+    }
+    
+    FunctionSymbol* func = &functionSymbols[funcIndex];
+    
+    if(func->hasReturnValue && func->returnsArray) {
+      if(func->returnType != VAR_STR) {
         CompileError(token.line, "Function '%s' does not return a string value", token.value);
       }
       
       FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
       
-      result.next = call.next;
+      if(call.next.type != TOKEN_LBRACKET) {
+        CompileError(call.next.line, "Function '%s' returns an array and must be indexed, e.g. %s()[0]", token.value, token.value);
+      }
+      
+      ExprResult idxExpr = ParseNumericExpression(LexerNext());
+      
+      if(idxExpr.type != VAR_INT) {
+        CompileError(token.line, "Array index must be an int");
+      }
+      
+      if(idxExpr.next.type != TOKEN_RBRACKET) {
+        CompileError(idxExpr.next.line, "Expected ]");
+      }
+      
+      result.next = LexerNext();
       result.srcVarIndex = -1;
-      result.sourceFromArgStack = 1;
+      result.sourceFromReturnedArrIndex = 1;
       
       return result;
     }
     
-    int index = FindSymbol(token.value);
-    
-    if(index == -1) {
-      CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+    if(!func->hasReturnValue || func->returnType != VAR_STR) {
+      CompileError(token.line, "Function '%s' does not return a string value", token.value);
     }
     
-    if(symbols[index].type != VAR_STR) {
-      CompileError(token.line, "Variable '%s' is not a string", token.value);
-    }
+    FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
     
-    result.next = ParseArrayIndex(index, token, afterName);
-    result.srcVarIndex = index;
-    result.srcIsArray = symbols[index].isArray;
-    result.srcIsLocal = symbols[index].isLocal;
+    result.next = call.next;
+    result.srcVarIndex = -1;
+    result.sourceFromArgStack = 1;
     
     return result;
   }
   
-  CompileError(token.line, "Expected string value");
+  int index = FindSymbol(token.value);
+  
+  if(index == -1) {
+    CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+  }
+  
+  if(symbols[index].type != VAR_STR) {
+    CompileError(token.line, "Variable '%s' is not a string", token.value);
+  }
+  
+  result.next = ParseArrayIndex(index, token, afterName);
+  result.srcVarIndex = index;
+  result.srcIsArray = symbols[index].isArray;
+  result.srcIsLocal = symbols[index].isLocal;
+  
+  return result;
 }
 
 // Parse a single bool value: true/false literal, NONE, or an existing bool
@@ -1092,53 +1124,63 @@ BoolResult ParseBoolValue(Token token) {
   }
   
   if(token.type == TOKEN_IDENTIFIER) {
-    Token afterName = LexerNext();
+    return ParseBoolIdentifier(token, LexerNext());
+  }
+  
+  CompileError(token.line, "Expected bool value");
+}
+
+// Handles a bool value starting with an identifier: a bool-returning
+// function call (afterName is '(') or an existing bool variable/array
+// element. Split out from ParseBoolValue, taking an already-peeked
+// lookahead token, exactly like ParseStringIdentifier/ParseNumericIdentifier
+// -- so other code needing the same one-token lookahead (e.g. format()
+// argument type detection) can reuse this directly.
+BoolResult ParseBoolIdentifier(Token token, Token afterName) {
+  BoolResult result = {0};
+  
+  if(afterName.type == TOKEN_LPAREN) {
+    int funcIndex = FindFunction(token.value);
     
-    if(afterName.type == TOKEN_LPAREN) {
-      int funcIndex = FindFunction(token.value);
-      
-      if(funcIndex == -1) {
-        CompileError(token.line, "Undefined function \"%s\"", token.value);
-      }
-      
-      if(!functionSymbols[funcIndex].hasReturnValue || functionSymbols[funcIndex].returnType != VAR_BOOL) {
-        CompileError(token.line, "Function '%s' does not return a bool value", token.value);
-      }
-      
-      FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
-      
-      result.next = call.next;
-      
-      return result;
+    if(funcIndex == -1) {
+      CompileError(token.line, "Undefined function \"%s\"", token.value);
     }
     
-    int index = FindSymbol(token.value);
-    
-    if(index == -1) {
-      CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+    if(!functionSymbols[funcIndex].hasReturnValue || functionSymbols[funcIndex].returnType != VAR_BOOL) {
+      CompileError(token.line, "Function '%s' does not return a bool value", token.value);
     }
     
-    if(symbols[index].type != VAR_BOOL) {
-      CompileError(token.line, "Variable '%s' is not a bool", token.value);
-    }
+    FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
     
-    Token next = ParseArrayIndex(index, token, afterName);
-    
-    Instruction instruction = {0};
-    
-    instruction.opcode = symbols[index].isArray ? OP_PUSH_ARR : OP_PUSH_VAR;
-    instruction.varIndex = index;
-    instruction.isLocal = symbols[index].isLocal;
-    instruction.line = token.line;
-    
-    EmitInstruction(instruction);
-    
-    result.next = next;
+    result.next = call.next;
     
     return result;
   }
   
-  CompileError(token.line, "Expected bool value");
+  int index = FindSymbol(token.value);
+  
+  if(index == -1) {
+    CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+  }
+  
+  if(symbols[index].type != VAR_BOOL) {
+    CompileError(token.line, "Variable '%s' is not a bool", token.value);
+  }
+  
+  Token next = ParseArrayIndex(index, token, afterName);
+  
+  Instruction instruction = {0};
+  
+  instruction.opcode = symbols[index].isArray ? OP_PUSH_ARR : OP_PUSH_VAR;
+  instruction.varIndex = index;
+  instruction.isLocal = symbols[index].isLocal;
+  instruction.line = token.line;
+  
+  EmitInstruction(instruction);
+  
+  result.next = next;
+  
+  return result;
 }
 
 // Parse a single condition operand: parenthesized condition, bool value, or numeric expression.
@@ -1305,7 +1347,7 @@ void EmitPushStringValue(StringResult value, int line) {
 // function that returns a string) -- the plain-variable case is handled
 // separately in ParseComparison, ahead of this check.
 int LooksLikeGeneralStringValue(Token token) {
-  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT) {
+  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT) {
     return 1;
   }
   
@@ -1316,6 +1358,335 @@ int LooksLikeGeneralStringValue(Token token) {
   }
   
   return 0;
+}
+
+// Parses and emits code for one format() (or print/input format-sugar)
+// argument, of whatever type it turns out to be, and records that type with
+// an OP_FORMAT_ARG instruction so the runtime knows which specifier it can
+// match and which stack to read it back from. Supports string, bool, int,
+// and float arguments; a bare comparison/logical expression (e.g. a == b)
+// isn't supported directly here -- assign it to a bool variable first.
+VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
+  VarType type;
+  int line = token.line;
+  int valueStart = bytecodeCount;
+  
+  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT) {
+    StringResult value = ParseStringValue(token);
+    
+    EmitPushStringValue(value, line);
+    
+    *outNext = value.next;
+    type = VAR_STR;
+  } else if(token.type == TOKEN_LIT_BOOL) {
+    BoolResult value = ParseBoolValue(token);
+    
+    *outNext = value.next;
+    type = VAR_BOOL;
+  } else if(token.type == TOKEN_IDENTIFIER) {
+    // One token of lookahead is needed to tell a function call from a plain
+    // variable (mirrors ParseNumericIdentifier/ParseStringIdentifier), so
+    // it's peeked once here and passed to whichever branch turns out right,
+    // rather than each branch re-reading it.
+    Token afterName = LexerNext();
+    int isStringSymbol;
+    int isBoolSymbol;
+    
+    if(afterName.type == TOKEN_LPAREN) {
+      int funcIndex = FindFunction(token.value);
+      
+      isStringSymbol = funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue &&
+        functionSymbols[funcIndex].returnType == VAR_STR;
+      isBoolSymbol = funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue &&
+        functionSymbols[funcIndex].returnType == VAR_BOOL;
+    } else {
+      int index = FindSymbol(token.value);
+      
+      isStringSymbol = index != -1 && symbols[index].type == VAR_STR;
+      isBoolSymbol = index != -1 && symbols[index].type == VAR_BOOL;
+    }
+    
+    if(isStringSymbol) {
+      StringResult value = ParseStringIdentifier(token, afterName);
+      
+      EmitPushStringValue(value, line);
+      
+      *outNext = value.next;
+      type = VAR_STR;
+    } else if(isBoolSymbol) {
+      BoolResult value = ParseBoolIdentifier(token, afterName);
+      
+      *outNext = value.next;
+      type = VAR_BOOL;
+    } else {
+      ExprResult value = ParseNumericIdentifier(token, afterName);
+      
+      value = ParseNumericTermTail(value);
+      value = ParseNumericExpressionTail(value);
+      
+      *outNext = value.next;
+      type = value.type;
+    }
+  } else {
+    ExprResult value = ParseNumericExpression(token);
+    
+    *outNext = value.next;
+    type = value.type;
+  }
+  
+  // A bare variable/array-element/call reference propagates its own NONE
+  // status; anything else (a literal, or a computed expression) is never
+  // NONE, exactly matching how OP_PRINT_VALUE decides the same thing.
+  int valueEnd = bytecodeCount;
+  int isBare = type != VAR_STR && valueEnd > valueStart &&
+    (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
+     bytecode[valueEnd - 1].opcode == OP_CALL);
+  
+  Instruction argInstr = {0};
+  
+  argInstr.opcode = OP_FORMAT_ARG;
+  argInstr.valueType = type;
+  argInstr.propagateNone = isBare;
+  argInstr.line = line;
+  
+  EmitInstruction(argInstr);
+  
+  return type;
+}
+
+// Parses ", arg1, arg2, ..." (comma-separated format arguments) following a
+// format string that's already been read, emitting OP_FORMAT_ARG_BEGIN, one
+// evaluate+OP_FORMAT_ARG pair per argument, and finally OP_FORMAT_STRING
+// (which resolves the format string itself and leaves the built string on
+// top of the string stack, exactly like a string-returning function call).
+// Shared by format(...) and the print/input inline format sugar ("%s", arg).
+// 'terminator' is the token type that ends the argument list -- ')' for
+// format(...), ';' for the print/input sugar. Returns the token right after
+// the terminator.
+Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, TokenType terminator) {
+  // Specifier list known at compile time, only when the format string is a
+  // literal written right here -- NULL means "not known, check at runtime".
+  char* knownSpecifiers = NULL;
+  int knownSpecifierCount = 0;
+  
+  if(fmtToken.type == TOKEN_LIT_STRING) {
+    int cap = 8;
+    knownSpecifiers = malloc(cap);
+    
+    for(int i = 0; fmtToken.value[i] != '\0'; i++) {
+      if(fmtToken.value[i] == '%' && fmtToken.value[i + 1] == '%') {
+        i++;
+        continue;
+      }
+      
+      if(fmtToken.value[i] == '%' &&
+         (fmtToken.value[i + 1] == 's' || fmtToken.value[i + 1] == 'd' ||
+          fmtToken.value[i + 1] == 'f' || fmtToken.value[i + 1] == 'b')) {
+        if(knownSpecifierCount >= cap) {
+          cap *= 2;
+          knownSpecifiers = realloc(knownSpecifiers, cap);
+        }
+        
+        knownSpecifiers[knownSpecifierCount++] = fmtToken.value[i + 1];
+        i++;
+      }
+    }
+  }
+  
+  Instruction beginInstr = {0};
+  
+  beginInstr.opcode = OP_FORMAT_ARG_BEGIN;
+  beginInstr.line = fmtToken.line;
+  
+  EmitInstruction(beginInstr);
+  
+  Token token = fmtValue.next;
+  int argCount = 0;
+  
+  while(token.type == TOKEN_COMMA) {
+    Token argToken = LexerNext();
+    
+    VarType argType = ParseAndEmitFormatArgument(argToken, &token);
+    
+    if(knownSpecifiers != NULL && argCount < knownSpecifierCount) {
+      char specifier = knownSpecifiers[argCount];
+      int ok =
+        (specifier == 's' && argType == VAR_STR) ||
+        (specifier == 'b' && argType == VAR_BOOL) ||
+        ((specifier == 'd' || specifier == 'f') && (argType == VAR_INT || argType == VAR_FLOAT));
+      
+      if(!ok) {
+        CompileError(argToken.line, "format argument %d does not match its %%%c specifier", argCount + 1, specifier);
+      }
+    }
+    
+    argCount++;
+  }
+  
+  if(token.type != terminator) {
+    CompileError(token.line, terminator == TOKEN_RPAREN ? "Expected )" : "Expected ;");
+  }
+  
+  if(knownSpecifiers != NULL && argCount != knownSpecifierCount) {
+    CompileError(token.line, "format string uses %d argument(s) but %d were given", knownSpecifierCount, argCount);
+  }
+  
+  free(knownSpecifiers);
+  
+  Instruction formatInstr = {0};
+  
+  formatInstr.opcode = OP_FORMAT_STRING;
+  formatInstr.line = fmtToken.line;
+  formatInstr.storeNone = fmtValue.isNoneLiteral;
+  formatInstr.srcVarIndex = fmtValue.srcVarIndex;
+  formatInstr.srcIsArray = fmtValue.srcIsArray;
+  formatInstr.srcIsLocal = fmtValue.srcIsLocal;
+  formatInstr.sourceFromArgStack = fmtValue.sourceFromArgStack;
+  formatInstr.sourceFromReturnedArrIndex = fmtValue.sourceFromReturnedArrIndex;
+  formatInstr.stringLiteral = fmtValue.literal;
+  
+  EmitInstruction(formatInstr);
+  
+  return LexerNext();
+}
+
+// Parses "format(fmtExpr, arg1, arg2, ...)". fmtExpr is resolved the same
+// way any other string source is (literal, variable, input, a nested
+// format(), or a string-returning function call); each following argument
+// can be str/int/float/bool and is matched, in order, against the
+// %s/%d/%f/%b specifiers found in the format string. When the format string
+// is a plain literal, its specifier count and types are checked right here
+// at compile time; otherwise (a variable/call whose text isn't known until
+// the program runs), that same checking happens at runtime instead -- see
+// OP_FORMAT_STRING.
+StringResult ParseFormatCall(Token formatToken) {
+  Token afterFormat = LexerNext();
+  
+  if(afterFormat.type != TOKEN_LPAREN) {
+    CompileError(formatToken.line, "Expected ( after format");
+  }
+  
+  Token fmtToken = LexerNext();
+  StringResult fmtValue = ParseStringValue(fmtToken);
+  
+  Token next = EmitFormatArgsAndBuild(fmtToken, fmtValue, TOKEN_RPAREN);
+  
+  StringResult result = {0};
+  
+  result.next = next;
+  result.srcVarIndex = -1;
+  result.sourceFromArgStack = 1;
+  
+  return result;
+}
+
+// Parses 'input "<fmt>", var1, var2, ...;' -- the scan-style counterpart to
+// print's format sugar. Reads one line from stdin, splits it into
+// whitespace-delimited tokens, and assigns one per %s/%d/%f/%b specifier
+// (in order) into the matching destination variable, converted per its
+// specifier. A destination with no token left to fill it becomes NONE,
+// matching how a declared-but-unassigned variable behaves everywhere else.
+// Since this form always starts from a literal (the caller only reaches
+// here after seeing one), the specifier count and each destination
+// variable's type are checked here at compile time. Destinations must be
+// plain scalar variables, not array elements.
+Token ParseScanInputStatement(Token fmtToken) {
+  int specifierCount = 0;
+  char* specifiers = malloc(strlen(fmtToken.value) + 1);
+  
+  for(int i = 0; fmtToken.value[i] != '\0'; i++) {
+    if(fmtToken.value[i] == '%' && fmtToken.value[i + 1] == '%') {
+      i++;
+      continue;
+    }
+    
+    if(fmtToken.value[i] == '%' &&
+       (fmtToken.value[i + 1] == 's' || fmtToken.value[i + 1] == 'd' ||
+        fmtToken.value[i + 1] == 'f' || fmtToken.value[i + 1] == 'b')) {
+      specifiers[specifierCount++] = fmtToken.value[i + 1];
+      i++;
+    }
+  }
+  
+  int varCapacity = 8;
+  int varCount = 0;
+  int* varIndex = malloc(varCapacity * sizeof(int));
+  int* varIsLocal = malloc(varCapacity * sizeof(int));
+  
+  Token token = LexerNext();
+  
+  while(1) {
+    if(token.type != TOKEN_IDENTIFIER) {
+      CompileError(token.line, "Expected a variable name");
+    }
+    
+    int index = FindSymbol(token.value);
+    
+    if(index == -1) {
+      CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+    }
+    
+    if(symbols[index].isArray) {
+      CompileError(token.line, "Variable '%s' is an array; input with a format string can only fill plain variables", token.value);
+    }
+    
+    if(varCount < specifierCount) {
+      char specifier = specifiers[varCount];
+      VarType type = symbols[index].type;
+      int ok =
+        (specifier == 's' && type == VAR_STR) ||
+        (specifier == 'b' && type == VAR_BOOL) ||
+        ((specifier == 'd' || specifier == 'f') && (type == VAR_INT || type == VAR_FLOAT));
+      
+      if(!ok) {
+        CompileError(token.line, "Variable '%s' does not match its %%%c specifier", token.value, specifier);
+      }
+    }
+    
+    if(varCount >= varCapacity) {
+      varCapacity *= 2;
+      varIndex = realloc(varIndex, varCapacity * sizeof(int));
+      varIsLocal = realloc(varIsLocal, varCapacity * sizeof(int));
+    }
+    
+    varIndex[varCount] = index;
+    varIsLocal[varCount] = symbols[index].isLocal;
+    varCount++;
+    
+    Token afterName = LexerNext();
+    
+    if(afterName.type == TOKEN_COMMA) {
+      token = LexerNext();
+      continue;
+    }
+    
+    token = afterName;
+    break;
+  }
+  
+  if(token.type != TOKEN_SEMICOLON) {
+    CompileError(token.line, "Expected ;");
+  }
+  
+  if(varCount != specifierCount) {
+    CompileError(token.line, "Format string uses %d specifier(s) but %d variable(s) were given", specifierCount, varCount);
+  }
+  
+  free(specifiers);
+  
+  Instruction scanInstr = {0};
+  
+  scanInstr.opcode = OP_SCAN_STRING;
+  scanInstr.line = fmtToken.line;
+  scanInstr.srcVarIndex = -1;
+  scanInstr.stringLiteral = fmtToken.value;
+  scanInstr.scanVarIndex = varIndex;
+  scanInstr.scanVarIsLocal = varIsLocal;
+  scanInstr.scanVarCount = varCount;
+  
+  EmitInstruction(scanInstr);
+  
+  return LexerNext();
 }
 
 // General string comparison for anything OTHER than a plain string variable
@@ -2601,8 +2972,9 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
 Token ParsePrintStatement() {
   Token value = LexerNext();
   
-  // Print the result of an input prompt directly, e.g. print input "Age: ";
-  if(value.type == TOKEN_KW_INPUT) {
+  // Print the result of an input prompt or format() call directly, e.g.
+  // print input "Age: "; or print format("Score: %d", score);
+  if(value.type == TOKEN_KW_INPUT || value.type == TOKEN_KW_FORMAT) {
     StringResult result = ParseStringValue(value);
     
     if(result.next.type != TOKEN_SEMICOLON) {
@@ -2621,10 +2993,31 @@ Token ParsePrintStatement() {
   
   // Print string literal
   if(value.type == TOKEN_LIT_STRING) {
-    Token semicolon = LexerNext();
+    Token afterLiteral = LexerNext();
     
-    if(semicolon.type != TOKEN_SEMICOLON) {
-      CompileError(semicolon.line, "Expected ;");
+    // print "%s", arg1, arg2, ...; -- same format machinery as format(),
+    // just built and printed directly instead of being assigned anywhere.
+    if(afterLiteral.type == TOKEN_COMMA) {
+      StringResult fmtValue = {0};
+      
+      fmtValue.literal = value.value;
+      fmtValue.srcVarIndex = -1;
+      fmtValue.next = afterLiteral;
+      
+      Token next = EmitFormatArgsAndBuild(value, fmtValue, TOKEN_SEMICOLON);
+      
+      Instruction printInstruction = {0};
+      
+      printInstruction.opcode = OP_PRINT_STRING_VALUE;
+      printInstruction.line = value.line;
+      
+      EmitInstruction(printInstruction);
+      
+      return next;
+    }
+    
+    if(afterLiteral.type != TOKEN_SEMICOLON) {
+      CompileError(afterLiteral.line, "Expected ;");
     }
     
     Instruction instruction = {0};
@@ -3308,6 +3701,7 @@ Token ParseReturnStatement(Token returnToken) {
   
   int isStringReturn =
     afterReturn.type == TOKEN_LIT_STRING ||
+    afterReturn.type == TOKEN_KW_FORMAT ||
     (afterReturn.type == TOKEN_IDENTIFIER && !isFunctionCallLookingAtLparen &&
       FindSymbol(afterReturn.value) != -1 && symbols[FindSymbol(afterReturn.value)].type == VAR_STR) ||
     (isFunctionCallLookingAtLparen && FindFunction(afterReturn.value) != -1 &&
@@ -3507,11 +3901,50 @@ Token ParseStatement(Token token) {
   }
   
   if(token.type == TOKEN_KW_INPUT) {
-    // Used as a bare statement (e.g. a "press enter to continue" prompt):
-    // reuses the exact same parsing as input-as-an-expression, just discards
-    // whatever line was read afterward, the same way an unused function
-    // call's return value is discarded.
-    StringResult value = ParseStringValue(token);
+    Token afterInput = LexerNext();
+    
+    if(afterInput.type == TOKEN_LIT_STRING) {
+      Token afterLiteral = LexerNext();
+      
+      // input "<fmt>", var1, var2, ...; -- the literal is a parsing
+      // template, not a displayed prompt. See ParseScanInputStatement.
+      if(afterLiteral.type == TOKEN_COMMA) {
+        return ParseScanInputStatement(afterInput);
+      }
+      
+      // input "prompt"; -- unchanged: the literal is shown as a prompt,
+      // then the line read is discarded, same as any other bare "input"
+      // statement whose value isn't used.
+      if(afterLiteral.type != TOKEN_SEMICOLON) {
+        CompileError(afterLiteral.line, "Expected ;");
+      }
+      
+      Instruction inputInstr = {0};
+      
+      inputInstr.opcode = OP_INPUT_STR;
+      inputInstr.line = token.line;
+      inputInstr.hasPrompt = 1;
+      inputInstr.srcVarIndex = -1;
+      inputInstr.stringLiteral = afterInput.value;
+      
+      EmitInstruction(inputInstr);
+      
+      Instruction discard = {0};
+      
+      discard.opcode = OP_POP_STRING_VALUE;
+      discard.line = token.line;
+      
+      EmitInstruction(discard);
+      
+      return LexerNext();
+    }
+    
+    // Used as a bare statement (e.g. a "press enter to continue" prompt, or
+    // a prompt built from a variable/format()/nested input): reuses the
+    // exact same parsing as input-as-an-expression, just discards whatever
+    // line was read afterward, the same way an unused function call's
+    // return value is discarded.
+    StringResult value = ParseInputExpr(token, afterInput);
     
     if(value.next.type != TOKEN_SEMICOLON) {
       CompileError(value.next.line, "Expected ;");

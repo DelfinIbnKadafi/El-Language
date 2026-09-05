@@ -79,7 +79,13 @@ typedef enum {
   OP_CAPTURE_RETURNED_STR_ARR,
   OP_INDEX_RETURNED_ARR,
   OP_INDEX_RETURNED_STR_ARR,
-  OP_DISCARD_RETURNED_ARR
+  OP_DISCARD_RETURNED_ARR,
+  
+  // format() / print "..", args / input "..", args -- see the fields below
+  OP_FORMAT_ARG_BEGIN,
+  OP_FORMAT_ARG,
+  OP_FORMAT_STRING,
+  OP_SCAN_STRING
 } Opcode;
 
 // Supported variable types
@@ -214,6 +220,13 @@ typedef struct {
   // variable, or sourceFromArgStack for a nested string-producing value) and
   // printed with no trailing newline before reading a line from stdin.
   int hasPrompt;
+  
+  // Destination variables for OP_SCAN_STRING (input "<fmt>", var1, var2;).
+  // One entry per variable, in the order they appear after the format
+  // string. Grows as needed, so there's no fixed cap on how many.
+  int* scanVarIndex;
+  int* scanVarIsLocal;
+  int scanVarCount;
 } Instruction;
 
 // Execute bytecode

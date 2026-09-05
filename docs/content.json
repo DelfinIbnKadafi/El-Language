@@ -89,6 +89,10 @@
     "String Comparison": {
       "file_md": "content/strings/string-comparison.md",
       "desc": "Comparing string values with == and !=."
+    },
+    "format()": {
+      "file_md": "content/strings/format.md",
+      "desc": "Building a string from a template with %s, %d, %f, and %b specifiers."
     }
   },
   "Console": {
