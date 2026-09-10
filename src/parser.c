@@ -188,6 +188,60 @@ int FindFunction(char* name) {
   return -1;
 }
 
+// What kind of value a builtin function's argument at a given position must
+// be. ARG_NUMERIC is int or float only (bool is not accepted, matching how
+// %d/%f work in format()); ARG_STR is a plain string; ARG_ANY accepts
+// str/int/float/bool (only int()/float()/str() use this); ARG_INT_STRICT
+// rejects a float value outright (only random() uses this).
+typedef enum { ARG_NUMERIC, ARG_STR, ARG_ANY, ARG_INT_STRICT } BuiltinArgKind;
+
+// What a builtin function returns. RET_WIDEN means "int if every argument
+// was int, float if any argument was float" -- the same widening rule the
+// language's own +/-/* operators already use (see abs()/min()/max()).
+typedef enum { RET_INT, RET_FLOAT, RET_STR, RET_WIDEN } BuiltinReturnKind;
+
+typedef struct {
+  char* name;
+  int argCount;
+  BuiltinArgKind argKinds[2];
+  BuiltinReturnKind returnKind;
+  int builtinId;
+} BuiltinDef;
+
+// int(), float(), and str() are handled separately (see ParseNumericFactor
+// and ParseStringValue) since their names are reserved type keywords, not
+// identifiers. len() is also handled separately when its argument is an
+// array (its size is a compile-time constant then) -- it only reaches
+// BUILTIN_LEN here for a str argument.
+BuiltinDef builtinTable[] = {
+  {"len",    1, {ARG_STR, ARG_STR},         RET_INT,   BUILTIN_LEN},
+  {"abs",    1, {ARG_NUMERIC, ARG_NUMERIC}, RET_WIDEN, BUILTIN_ABS},
+  {"min",    2, {ARG_NUMERIC, ARG_NUMERIC}, RET_WIDEN, BUILTIN_MIN},
+  {"max",    2, {ARG_NUMERIC, ARG_NUMERIC}, RET_WIDEN, BUILTIN_MAX},
+  {"pow",    2, {ARG_NUMERIC, ARG_NUMERIC}, RET_FLOAT, BUILTIN_POW},
+  {"sqrt",   1, {ARG_NUMERIC, ARG_NUMERIC}, RET_FLOAT, BUILTIN_SQRT},
+  {"round",  1, {ARG_NUMERIC, ARG_NUMERIC}, RET_INT,   BUILTIN_ROUND},
+  {"floor",  1, {ARG_NUMERIC, ARG_NUMERIC}, RET_INT,   BUILTIN_FLOOR},
+  {"ceil",   1, {ARG_NUMERIC, ARG_NUMERIC}, RET_INT,   BUILTIN_CEIL},
+  {"upper",  1, {ARG_STR, ARG_STR},         RET_STR,   BUILTIN_UPPER},
+  {"lower",  1, {ARG_STR, ARG_STR},         RET_STR,   BUILTIN_LOWER},
+  {"trim",   1, {ARG_STR, ARG_STR},         RET_STR,   BUILTIN_TRIM},
+  {"random", 2, {ARG_INT_STRICT, ARG_INT_STRICT}, RET_INT, BUILTIN_RANDOM}
+};
+
+#define BUILTIN_COUNT (int) (sizeof(builtinTable) / sizeof(builtinTable[0]))
+
+int FindBuiltin(char* name) {
+  for(int i = 0; i < BUILTIN_COUNT; i++) {
+    if(strcmp(builtinTable[i].name, name) == 0) {
+      return i;
+    }
+  }
+  
+  return -1;
+}
+
+
 // True if a call to 'funcIndex' can be used as a plain int/float/bool value
 // at this point in compilation. If the function's return kind isn't known
 // yet, that's only ever allowed for a call to itself (recursion) -- and only
@@ -314,6 +368,14 @@ typedef struct {
   int isNoneLiteral;
 } BoolResult;
 
+// Result of parsing any builtin function call: lookahead token, and the
+// call's actual result type (already resolved from its BuiltinReturnKind --
+// RET_WIDEN becomes whichever of int/float actually applies).
+typedef struct {
+  Token next;
+  VarType type;
+} BuiltinCallResult;
+
 // Result of parsing a function call: lookahead token, and whether/what it returns
 typedef struct {
   Token next;
@@ -337,6 +399,7 @@ CondResult ParseAndExprTail(CondResult left);
 CondResult ParseOrExprTail(CondResult left);
 Token ParseStatement(Token token);
 Token ParseIdentifierStatement(Token token, TokenType terminator);
+Token ParseIdentifierStatementFrom(Token token, Token afterName, TokenType terminator);
 StringResult ParseStringValue(Token token);
 StringResult ParseInputExpr(Token token, Token afterInput);
 StringResult ParseStringIdentifier(Token token, Token afterName);
@@ -345,9 +408,17 @@ BoolResult ParseBoolIdentifier(Token token, Token afterName);
 FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken);
 Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, Token token);
 VarType ParseAndEmitFormatArgument(Token token, Token* outNext);
+BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken);
+ExprResult ParseLenCall(Token nameToken);
+Token ParseConversionCall(char* keyword, int builtinId, Token keywordToken);
 Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, TokenType terminator);
 StringResult ParseFormatCall(Token formatToken);
 Token ParseScanInputStatement(Token fmtToken);
+char* ExtractSpecifiers(char* fmtText, int* outCount);
+Token ParseScanDestinationList(char* label, char* specifiers, int specifierCount,
+    int** outVarIndex, int** outVarIsLocal, int* outVarCount);
+Token ParseSscanfStatement(Token nameToken);
+Token ParseSplitStatement(Token nameToken);
 
 // Parse an optional array index following an identifier that resolves to symbol
 // 'symbolIndex'. 'nameToken' identifies the variable for error messages, and
@@ -688,6 +759,21 @@ ExprResult ParseNumericIdentifier(Token token, Token afterName) {
   ExprResult result = {0};
   
   if(afterName.type == TOKEN_LPAREN) {
+    if(strcmp(token.value, "len") == 0) {
+      return ParseLenCall(token);
+    }
+    
+    int builtinIndex = FindBuiltin(token.value);
+    
+    if(builtinIndex != -1 && builtinTable[builtinIndex].returnKind != RET_STR) {
+      BuiltinCallResult call = ParseBuiltinCall(builtinIndex, token);
+      
+      result.next = call.next;
+      result.type = call.type;
+      
+      return result;
+    }
+    
     int funcIndex = FindFunction(token.value);
     
     if(funcIndex == -1) {
@@ -858,6 +944,16 @@ ExprResult ParseNumericFactor(Token token) {
     return ParseNumericIdentifier(token, LexerNext());
   }
   
+  // int(x) / float(x) -- reserved type keywords used as a conversion call
+  if(token.type == TOKEN_TYPE_INT || token.type == TOKEN_TYPE_FLOAT) {
+    int builtinId = token.type == TOKEN_TYPE_INT ? BUILTIN_INT : BUILTIN_FLOAT;
+    
+    result.next = ParseConversionCall(token.type == TOKEN_TYPE_INT ? "int" : "float", builtinId, token);
+    result.type = token.type == TOKEN_TYPE_INT ? VAR_INT : VAR_FLOAT;
+    
+    return result;
+  }
+  
   CompileError(token.line, "Expected value");
 }
 
@@ -960,6 +1056,14 @@ StringResult ParseStringValue(Token token) {
     return ParseFormatCall(token);
   }
   
+  if(token.type == TOKEN_TYPE_STR) {
+    result.next = ParseConversionCall("str", BUILTIN_STR, token);
+    result.srcVarIndex = -1;
+    result.sourceFromArgStack = 1;
+    
+    return result;
+  }
+  
   if(token.type == TOKEN_IDENTIFIER) {
     return ParseStringIdentifier(token, LexerNext());
   }
@@ -1027,6 +1131,18 @@ StringResult ParseStringIdentifier(Token token, Token afterName) {
   StringResult result = {0};
   
   if(afterName.type == TOKEN_LPAREN) {
+    int builtinIndex = FindBuiltin(token.value);
+    
+    if(builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_STR) {
+      BuiltinCallResult call = ParseBuiltinCall(builtinIndex, token);
+      
+      result.next = call.next;
+      result.srcVarIndex = -1;
+      result.sourceFromArgStack = 1;
+      
+      return result;
+    }
+    
     int funcIndex = FindFunction(token.value);
     
     if(funcIndex == -1) {
@@ -1347,14 +1463,20 @@ void EmitPushStringValue(StringResult value, int line) {
 // function that returns a string) -- the plain-variable case is handled
 // separately in ParseComparison, ahead of this check.
 int LooksLikeGeneralStringValue(Token token) {
-  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT) {
+  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT || token.type == TOKEN_TYPE_STR) {
     return 1;
   }
   
   if(token.type == TOKEN_IDENTIFIER) {
     int funcIndex = FindFunction(token.value);
     
-    return funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_STR;
+    if(funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_STR) {
+      return 1;
+    }
+    
+    int builtinIndex = FindBuiltin(token.value);
+    
+    return builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_STR;
   }
   
   return 0;
@@ -1371,7 +1493,7 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
   int line = token.line;
   int valueStart = bytecodeCount;
   
-  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT) {
+  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT || token.type == TOKEN_TYPE_STR) {
     StringResult value = ParseStringValue(token);
     
     EmitPushStringValue(value, line);
@@ -1394,9 +1516,11 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
     
     if(afterName.type == TOKEN_LPAREN) {
       int funcIndex = FindFunction(token.value);
+      int builtinIndex = FindBuiltin(token.value);
       
-      isStringSymbol = funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue &&
-        functionSymbols[funcIndex].returnType == VAR_STR;
+      isStringSymbol = (funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue &&
+        functionSymbols[funcIndex].returnType == VAR_STR) ||
+        (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_STR);
       isBoolSymbol = funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue &&
         functionSymbols[funcIndex].returnType == VAR_BOOL;
     } else {
@@ -1440,7 +1564,7 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
   int valueEnd = bytecodeCount;
   int isBare = type != VAR_STR && valueEnd > valueStart &&
     (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
   
   Instruction argInstr = {0};
   
@@ -1454,6 +1578,226 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
   return type;
 }
 
+
+// Parses "name(arg1, ...)" for any builtin OTHER than len() (which has its
+// own dual compile-time/runtime path -- see ParseLenCall) and int()/float()
+// (reserved type keywords, handled in ParseNumericFactor instead). Argument
+// count and types are checked against the builtin's signature; arguments
+// are collected the same way format()'s are (OP_FORMAT_ARG_BEGIN/ARG), then
+// OP_CALL_BUILTIN runs the native implementation and leaves the result on
+// the matching stack.
+BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken) {
+  BuiltinDef* def = &builtinTable[builtinIndex];
+  
+  Instruction beginInstr = {0};
+  
+  beginInstr.opcode = OP_FORMAT_ARG_BEGIN;
+  beginInstr.line = nameToken.line;
+  
+  EmitInstruction(beginInstr);
+  
+  Token token = LexerNext();
+  int allInt = 1;
+  
+  for(int i = 0; i < def->argCount; i++) {
+    if(i > 0) {
+      if(token.type != TOKEN_COMMA) {
+        CompileError(token.line, "%s() expects %d argument(s)", def->name, def->argCount);
+      }
+      
+      token = LexerNext();
+    }
+    
+    VarType argType;
+    
+    if(def->argKinds[i] == ARG_ANY) {
+      argType = ParseAndEmitFormatArgument(token, &token);
+    } else {
+      int valueStart = bytecodeCount;
+      
+      if(def->argKinds[i] == ARG_STR) {
+        StringResult value = ParseStringValue(token);
+        
+        EmitPushStringValue(value, token.line);
+        
+        token = value.next;
+        argType = VAR_STR;
+      } else {
+        ExprResult value = ParseNumericExpression(token);
+        
+        token = value.next;
+        argType = value.type;
+        
+        if(def->argKinds[i] == ARG_INT_STRICT && argType != VAR_INT) {
+          CompileError(token.line, "%s() argument %d must be an int", def->name, i + 1);
+        }
+      }
+      
+      int valueEnd = bytecodeCount;
+      int isBare = argType != VAR_STR && valueEnd > valueStart &&
+        (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
+         bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+      
+      Instruction argInstr = {0};
+      
+      argInstr.opcode = OP_FORMAT_ARG;
+      argInstr.valueType = argType;
+      argInstr.propagateNone = isBare;
+      argInstr.line = nameToken.line;
+      
+      EmitInstruction(argInstr);
+    }
+    
+    allInt = allInt && argType == VAR_INT;
+  }
+  
+  if(token.type != TOKEN_RPAREN) {
+    CompileError(token.line, "Expected )");
+  }
+  
+  Instruction callInstr = {0};
+  
+  callInstr.opcode = OP_CALL_BUILTIN;
+  callInstr.builtinId = def->builtinId;
+  callInstr.line = nameToken.line;
+  
+  EmitInstruction(callInstr);
+  
+  BuiltinCallResult result;
+  
+  result.next = LexerNext();
+  result.type =
+    def->returnKind == RET_INT ? VAR_INT :
+    def->returnKind == RET_FLOAT ? VAR_FLOAT :
+    def->returnKind == RET_STR ? VAR_STR :
+    (allInt ? VAR_INT : VAR_FLOAT);
+  
+  return result;
+}
+
+// Shared tail for len(): wraps a single already-resolved string source in
+// the same OP_FORMAT_ARG_BEGIN/ARG + OP_CALL_BUILTIN(BUILTIN_LEN) sequence
+// ParseBuiltinCall uses, then expects the closing ')'.
+ExprResult ParseLenOfString(StringResult value, int line) {
+  Instruction beginInstr = {0};
+  
+  beginInstr.opcode = OP_FORMAT_ARG_BEGIN;
+  beginInstr.line = line;
+  
+  EmitInstruction(beginInstr);
+  
+  EmitPushStringValue(value, line);
+  
+  Instruction argInstr = {0};
+  
+  argInstr.opcode = OP_FORMAT_ARG;
+  argInstr.valueType = VAR_STR;
+  argInstr.line = line;
+  
+  EmitInstruction(argInstr);
+  
+  if(value.next.type != TOKEN_RPAREN) {
+    CompileError(value.next.line, "Expected )");
+  }
+  
+  Instruction callInstr = {0};
+  
+  callInstr.opcode = OP_CALL_BUILTIN;
+  callInstr.builtinId = BUILTIN_LEN;
+  callInstr.line = line;
+  
+  EmitInstruction(callInstr);
+  
+  ExprResult result = {0};
+  
+  result.next = LexerNext();
+  result.type = VAR_INT;
+  
+  return result;
+}
+
+// Parses "len(arg)". A bare array reference (no index), of any element
+// type, is already a known size at compile time, so it's resolved directly
+// to a constant -- no runtime call needed. Anything else (a string literal,
+// a str variable, an indexed str array element, a string-returning call,
+// etc.) falls back to measuring the string's actual length at runtime.
+ExprResult ParseLenCall(Token nameToken) {
+  Token argToken = LexerNext();
+  
+  if(argToken.type == TOKEN_IDENTIFIER) {
+    int index = FindSymbol(argToken.value);
+    
+    if(index != -1 && symbols[index].isArray) {
+      Token afterArg = LexerNext();
+      
+      if(afterArg.type != TOKEN_LBRACKET) {
+        if(afterArg.type != TOKEN_RPAREN) {
+          CompileError(afterArg.line, "Expected )");
+        }
+        
+        Instruction push = {0};
+        
+        push.opcode = OP_PUSH_NUMBER;
+        push.numberValue = symbols[index].arraySize;
+        push.line = nameToken.line;
+        
+        EmitInstruction(push);
+        
+        ExprResult result = {0};
+        
+        result.next = LexerNext();
+        result.type = VAR_INT;
+        
+        return result;
+      }
+      
+      return ParseLenOfString(ParseStringIdentifier(argToken, afterArg), nameToken.line);
+    }
+  }
+  
+  return ParseLenOfString(ParseStringValue(argToken), nameToken.line);
+}
+
+// Shared implementation for int()/float()/str() -- their names are reserved
+// type keywords, not identifiers, so they're recognized directly at the
+// value-parsing level (ParseNumericFactor for int()/float(), ParseStringValue
+// for str()) rather than through the generic builtin table. The single
+// argument can be str/int/float/bool, auto-detected the same way format()'s
+// arguments are. 'keyword' is the token that was already read (used for its
+// line number and for the error message if '(' doesn't follow).
+Token ParseConversionCall(char* keyword, int builtinId, Token keywordToken) {
+  Token afterKeyword = LexerNext();
+  
+  if(afterKeyword.type != TOKEN_LPAREN) {
+    CompileError(keywordToken.line, "Expected ( after %s", keyword);
+  }
+  
+  Instruction beginInstr = {0};
+  
+  beginInstr.opcode = OP_FORMAT_ARG_BEGIN;
+  beginInstr.line = keywordToken.line;
+  
+  EmitInstruction(beginInstr);
+  
+  Token argToken = LexerNext();
+  Token next;
+  
+  ParseAndEmitFormatArgument(argToken, &next);
+  
+  if(next.type != TOKEN_RPAREN) {
+    CompileError(next.line, "Expected )");
+  }
+  
+  Instruction callInstr = {0};
+  
+  callInstr.opcode = OP_CALL_BUILTIN;
+  callInstr.builtinId = builtinId;
+  callInstr.line = keywordToken.line;
+  
+  EmitInstruction(callInstr);
+  
+  return LexerNext();
+}
 // Parses ", arg1, arg2, ..." (comma-separated format arguments) following a
 // format string that's already been read, emitting OP_FORMAT_ARG_BEGIN, one
 // evaluate+OP_FORMAT_ARG pair per argument, and finally OP_FORMAT_STRING
@@ -1685,6 +2029,225 @@ Token ParseScanInputStatement(Token fmtToken) {
   scanInstr.scanVarCount = varCount;
   
   EmitInstruction(scanInstr);
+  
+  return LexerNext();
+}
+
+// Parses a comma-separated list of plain (non-array) destination variables
+// -- shared by sscanf() and split(). 'specifiers', if not NULL, is checked
+// against each variable's type the same way ParseScanInputStatement does;
+// pass NULL when there's no format string to check against (split() always
+// fills str variables, so it doesn't need this). Returns the token right
+// after the last variable name (a ',' still pending is left for the caller
+// -- this only stops at ')').
+Token ParseScanDestinationList(char* label, char* specifiers, int specifierCount,
+    int** outVarIndex, int** outVarIsLocal, int* outVarCount) {
+  int varCapacity = 8;
+  int varCount = 0;
+  int* varIndex = malloc(varCapacity * sizeof(int));
+  int* varIsLocal = malloc(varCapacity * sizeof(int));
+  
+  Token token = LexerNext();
+  
+  while(1) {
+    if(token.type != TOKEN_IDENTIFIER) {
+      CompileError(token.line, "Expected a variable name");
+    }
+    
+    int index = FindSymbol(token.value);
+    
+    if(index == -1) {
+      CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+    }
+    
+    if(symbols[index].isArray) {
+      CompileError(token.line, "Variable '%s' is an array; %s can only fill plain variables", token.value, label);
+    }
+    
+    if(specifiers != NULL) {
+      if(varCount < specifierCount) {
+        char specifier = specifiers[varCount];
+        VarType type = symbols[index].type;
+        int ok =
+          (specifier == 's' && type == VAR_STR) ||
+          (specifier == 'b' && type == VAR_BOOL) ||
+          ((specifier == 'd' || specifier == 'f') && (type == VAR_INT || type == VAR_FLOAT));
+        
+        if(!ok) {
+          CompileError(token.line, "Variable '%s' does not match its %%%c specifier", token.value, specifier);
+        }
+      }
+    } else if(symbols[index].type != VAR_STR) {
+      CompileError(token.line, "Variable '%s' is not a string; %s always fills string variables", token.value, label);
+    }
+    
+    if(varCount >= varCapacity) {
+      varCapacity *= 2;
+      varIndex = realloc(varIndex, varCapacity * sizeof(int));
+      varIsLocal = realloc(varIsLocal, varCapacity * sizeof(int));
+    }
+    
+    varIndex[varCount] = index;
+    varIsLocal[varCount] = symbols[index].isLocal;
+    varCount++;
+    
+    Token afterName = LexerNext();
+    
+    if(afterName.type == TOKEN_COMMA) {
+      token = LexerNext();
+      continue;
+    }
+    
+    token = afterName;
+    break;
+  }
+  
+  *outVarIndex = varIndex;
+  *outVarIsLocal = varIsLocal;
+  *outVarCount = varCount;
+  
+  return token;
+}
+
+// Extracts the %s/%d/%f/%b specifiers from a literal format string, in
+// order, into a freshly allocated buffer -- shared by input's scan sugar
+// and sscanf().
+char* ExtractSpecifiers(char* fmtText, int* outCount) {
+  char* specifiers = malloc(strlen(fmtText) + 1);
+  int count = 0;
+  
+  for(int i = 0; fmtText[i] != '\0'; i++) {
+    if(fmtText[i] == '%' && fmtText[i + 1] == '%') {
+      i++;
+      continue;
+    }
+    
+    if(fmtText[i] == '%' &&
+       (fmtText[i + 1] == 's' || fmtText[i + 1] == 'd' || fmtText[i + 1] == 'f' || fmtText[i + 1] == 'b')) {
+      specifiers[count++] = fmtText[i + 1];
+      i++;
+    }
+  }
+  
+  *outCount = count;
+  return specifiers;
+}
+
+// Parses "sscanf(source, "<fmt>", var1, var2, ...)" -- like input's scan
+// sugar, but the text to parse is a string expression (literal, variable,
+// another call) rather than a line read from stdin. The format string
+// itself must still be a literal, so its specifiers and the variable count
+// can be checked here at compile time.
+Token ParseSscanfStatement(Token nameToken) {
+  Token sourceToken = LexerNext();
+  StringResult source = ParseStringValue(sourceToken);
+  
+  if(source.next.type != TOKEN_COMMA) {
+    CompileError(source.next.line, "Expected , after sscanf's source string");
+  }
+  
+  Token fmtToken = LexerNext();
+  
+  if(fmtToken.type != TOKEN_LIT_STRING) {
+    CompileError(fmtToken.line, "sscanf()'s format string must be a literal");
+  }
+  
+  int specifierCount = 0;
+  char* specifiers = ExtractSpecifiers(fmtToken.value, &specifierCount);
+  
+  Token afterFmt = LexerNext();
+  
+  if(afterFmt.type != TOKEN_COMMA) {
+    CompileError(afterFmt.line, "Expected , after sscanf's format string");
+  }
+  
+  int* varIndex;
+  int* varIsLocal;
+  int varCount;
+  
+  Token token = ParseScanDestinationList("sscanf()", specifiers, specifierCount, &varIndex, &varIsLocal, &varCount);
+  
+  if(token.type != TOKEN_RPAREN) {
+    CompileError(token.line, "Expected )");
+  }
+  
+  Token afterParen = LexerNext();
+  
+  if(afterParen.type != TOKEN_SEMICOLON) {
+    CompileError(afterParen.line, "Expected ;");
+  }
+  
+  if(varCount != specifierCount) {
+    CompileError(nameToken.line, "Format string uses %d specifier(s) but %d variable(s) were given", specifierCount, varCount);
+  }
+  
+  free(specifiers);
+  
+  Instruction scanInstr = {0};
+  
+  scanInstr.opcode = OP_SSCANF;
+  scanInstr.line = nameToken.line;
+  scanInstr.storeNone = source.isNoneLiteral;
+  scanInstr.srcVarIndex = source.srcVarIndex;
+  scanInstr.srcIsArray = source.srcIsArray;
+  scanInstr.srcIsLocal = source.srcIsLocal;
+  scanInstr.sourceFromArgStack = source.sourceFromArgStack;
+  scanInstr.sourceFromReturnedArrIndex = source.sourceFromReturnedArrIndex;
+  scanInstr.stringLiteral = source.literal;
+  scanInstr.scanFormat = fmtToken.value;
+  scanInstr.scanVarIndex = varIndex;
+  scanInstr.scanVarIsLocal = varIsLocal;
+  scanInstr.scanVarCount = varCount;
+  
+  EmitInstruction(scanInstr);
+  
+  return LexerNext();
+}
+
+// Parses "split(source, var1, var2, ...)" -- splits 'source' on whitespace
+// into var1, var2, ... (always strings), discarding any extra pieces beyond
+// however many variables were given, and leaving a variable NONE if there
+// weren't enough pieces to fill it.
+Token ParseSplitStatement(Token nameToken) {
+  Token sourceToken = LexerNext();
+  StringResult source = ParseStringValue(sourceToken);
+  
+  if(source.next.type != TOKEN_COMMA) {
+    CompileError(source.next.line, "Expected , after split()'s source string");
+  }
+  
+  int* varIndex;
+  int* varIsLocal;
+  int varCount;
+  
+  Token token = ParseScanDestinationList("split()", NULL, 0, &varIndex, &varIsLocal, &varCount);
+  
+  if(token.type != TOKEN_RPAREN) {
+    CompileError(token.line, "Expected )");
+  }
+  
+  Token afterParen = LexerNext();
+  
+  if(afterParen.type != TOKEN_SEMICOLON) {
+    CompileError(afterParen.line, "Expected ;");
+  }
+  
+  Instruction splitInstr = {0};
+  
+  splitInstr.opcode = OP_SPLIT;
+  splitInstr.line = nameToken.line;
+  splitInstr.storeNone = source.isNoneLiteral;
+  splitInstr.srcVarIndex = source.srcVarIndex;
+  splitInstr.srcIsArray = source.srcIsArray;
+  splitInstr.srcIsLocal = source.srcIsLocal;
+  splitInstr.sourceFromArgStack = source.sourceFromArgStack;
+  splitInstr.sourceFromReturnedArrIndex = source.sourceFromReturnedArrIndex;
+  splitInstr.stringLiteral = source.literal;
+  splitInstr.scanVarIndex = varIndex;
+  splitInstr.scanVarIsLocal = varIsLocal;
+  splitInstr.scanVarCount = varCount;
+  
+  EmitInstruction(splitInstr);
   
   return LexerNext();
 }
@@ -2586,15 +3149,26 @@ Token ParseVarDeclaration() {
     int propagateNone = 0;
     
     if(next.type == TOKEN_OP_ASSIGN) {
-      int valueStart = bytecodeCount;
-      BoolResult value = ParseBoolValue(LexerNext());
-      int valueEnd = bytecodeCount;
+      Token afterEq = LexerNext();
       
-      storeNone = value.isNoneLiteral;
-      propagateNone = !storeNone && valueEnd > valueStart &&
-        (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL);
-      nextAfter = value.next;
+      if(afterEq.type == TOKEN_KW_NONE) {
+        storeNone = 1;
+        nextAfter = LexerNext();
+      } else {
+        // Any bool-typed expression is allowed here, not just a bare
+        // literal or variable -- a comparison (a >= b) or a logical
+        // combination (a and b) is just as valid a bool value, the same
+        // way it's valid as an if/while condition. ParseOrExpr is the same
+        // general entry point those use.
+        int valueStart = bytecodeCount;
+        CondResult value = ParseOrExpr(afterEq);
+        int valueEnd = bytecodeCount;
+        
+        propagateNone = valueEnd > valueStart &&
+          (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
+           bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+        nextAfter = value.next;
+      }
     } else {
       // No initializer at all: starts as NONE
       storeNone = 1;
@@ -2644,7 +3218,7 @@ Token ParseVarDeclaration() {
       
       propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
       
       nextAfter = exprResult.next;
     }
@@ -2692,9 +3266,45 @@ void ExpectTerminator(Token token, TokenType terminator) {
 // the statement: ';' for a normal statement, or ')' when this is used as a
 // for-loop's increment clause.
 Token ParseIdentifierStatement(Token token, TokenType terminator) {
-  Token afterName = LexerNext();
-  
+  return ParseIdentifierStatementFrom(token, LexerNext(), terminator);
+}
+
+// Same as ParseIdentifierStatement, but takes an already-peeked lookahead
+// token instead of reading it itself -- used by the sscanf()/split()
+// dispatch in ParseStatement, which needs that same one token of lookahead
+// to tell those two apart from an ordinary identifier statement first.
+Token ParseIdentifierStatementFrom(Token token, Token afterName, TokenType terminator) {
   if(afterName.type == TOKEN_LPAREN) {
+    if(strcmp(token.value, "len") == 0 || FindBuiltin(token.value) != -1) {
+      Token next;
+      VarType resultType;
+      
+      if(strcmp(token.value, "len") == 0) {
+        ExprResult result = ParseLenCall(token);
+        
+        next = result.next;
+        resultType = result.type;
+      } else {
+        int builtinIndex = FindBuiltin(token.value);
+        
+        BuiltinCallResult call = ParseBuiltinCall(builtinIndex, token);
+        
+        next = call.next;
+        resultType = call.type;
+      }
+      
+      Instruction pop = {0};
+      
+      pop.opcode = resultType == VAR_STR ? OP_POP_STRING_VALUE : OP_POP;
+      pop.line = token.line;
+      
+      EmitInstruction(pop);
+      
+      ExpectTerminator(next, terminator);
+      
+      return LexerNext();
+    }
+    
     int funcIndex = FindFunction(token.value);
     
     if(funcIndex == -1) {
@@ -2901,22 +3511,35 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
     
     EmitInstruction(instruction);
   } else if(varType == VAR_BOOL) {
-    int valueStart = bytecodeCount;
-    BoolResult value = ParseBoolValue(LexerNext());
-    int valueEnd = bytecodeCount;
+    Token afterAssignToken = LexerNext();
+    int storeNoneFlag;
+    int isBareCopy;
+    Token nextTok;
     
-    ExpectTerminator(value.next, terminator);
+    if(afterAssignToken.type == TOKEN_KW_NONE) {
+      storeNoneFlag = 1;
+      isBareCopy = 0;
+      nextTok = LexerNext();
+    } else {
+      int valueStart = bytecodeCount;
+      CondResult value = ParseOrExpr(afterAssignToken);
+      int valueEnd = bytecodeCount;
+      
+      storeNoneFlag = 0;
+      isBareCopy = valueEnd > valueStart &&
+        (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
+         bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+      nextTok = value.next;
+    }
     
-    int isBareCopy = !value.isNoneLiteral && valueEnd > valueStart &&
-      (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL);
+    ExpectTerminator(nextTok, terminator);
     
     Instruction instruction = {0};
     
     instruction.opcode = isIndexed ? OP_STORE_ARR : OP_STORE_VAR;
     instruction.varIndex = index;
     instruction.isLocal = destIsLocal;
-    instruction.storeNone = value.isNoneLiteral;
+    instruction.storeNone = storeNoneFlag;
     instruction.propagateNone = isBareCopy;
     instruction.line = token.line;
     
@@ -2951,7 +3574,7 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
       
       int propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
       
       Instruction instruction = {0};
       
@@ -2972,9 +3595,10 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
 Token ParsePrintStatement() {
   Token value = LexerNext();
   
-  // Print the result of an input prompt or format() call directly, e.g.
-  // print input "Age: "; or print format("Score: %d", score);
-  if(value.type == TOKEN_KW_INPUT || value.type == TOKEN_KW_FORMAT) {
+  // Print the result of an input prompt, format(), or str() call directly,
+  // e.g. print input "Age: "; or print format("Score: %d", score); or
+  // print str(42);
+  if(value.type == TOKEN_KW_INPUT || value.type == TOKEN_KW_FORMAT || value.type == TOKEN_TYPE_STR) {
     StringResult result = ParseStringValue(value);
     
     if(result.next.type != TOKEN_SEMICOLON) {
@@ -3060,6 +3684,54 @@ Token ParsePrintStatement() {
     Token afterName = LexerNext();
     
     if(afterName.type == TOKEN_LPAREN) {
+      if(strcmp(value.value, "len") == 0 || FindBuiltin(value.value) != -1) {
+        ExprResult numResult = {0};
+        StringResult strResult = {0};
+        int isStr = 0;
+        
+        if(strcmp(value.value, "len") == 0) {
+          numResult = ParseLenCall(value);
+        } else {
+          int builtinIndex = FindBuiltin(value.value);
+          
+          if(builtinTable[builtinIndex].returnKind == RET_STR) {
+            BuiltinCallResult call = ParseBuiltinCall(builtinIndex, value);
+            
+            strResult.next = call.next;
+            strResult.srcVarIndex = -1;
+            strResult.sourceFromArgStack = 1;
+            isStr = 1;
+          } else {
+            BuiltinCallResult call = ParseBuiltinCall(builtinIndex, value);
+            
+            numResult.next = call.next;
+            numResult.type = call.type;
+          }
+        }
+        
+        Token semicolon = isStr ? strResult.next : numResult.next;
+        
+        if(semicolon.type != TOKEN_SEMICOLON) {
+          CompileError(semicolon.line, "Expected ;");
+        }
+        
+        Instruction printInstruction = {0};
+        
+        printInstruction.line = value.line;
+        
+        if(isStr) {
+          printInstruction.opcode = OP_PRINT_STRING_VALUE;
+        } else {
+          printInstruction.opcode = OP_PRINT_VALUE;
+          printInstruction.valueType = numResult.type;
+          printInstruction.propagateNone = 1;
+        }
+        
+        EmitInstruction(printInstruction);
+        
+        return LexerNext();
+      }
+      
       int funcIndex = FindFunction(value.value);
       
       if(funcIndex == -1) {
@@ -3224,7 +3896,7 @@ Token ParsePrintStatement() {
     
     int isBare = valueEnd > valueStart &&
       (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
     
     Instruction instruction = {0};
     
@@ -3702,11 +4374,14 @@ Token ParseReturnStatement(Token returnToken) {
   int isStringReturn =
     afterReturn.type == TOKEN_LIT_STRING ||
     afterReturn.type == TOKEN_KW_FORMAT ||
+    afterReturn.type == TOKEN_TYPE_STR ||
     (afterReturn.type == TOKEN_IDENTIFIER && !isFunctionCallLookingAtLparen &&
       FindSymbol(afterReturn.value) != -1 && symbols[FindSymbol(afterReturn.value)].type == VAR_STR) ||
     (isFunctionCallLookingAtLparen && FindFunction(afterReturn.value) != -1 &&
       functionSymbols[FindFunction(afterReturn.value)].hasReturnValue &&
-      functionSymbols[FindFunction(afterReturn.value)].returnType == VAR_STR);
+      functionSymbols[FindFunction(afterReturn.value)].returnType == VAR_STR) ||
+    (isFunctionCallLookingAtLparen && FindBuiltin(afterReturn.value) != -1 &&
+      builtinTable[FindBuiltin(afterReturn.value)].returnKind == RET_STR);
   
   VarType returnedType;
   Token afterExpr;
@@ -3714,7 +4389,13 @@ Token ParseReturnStatement(Token returnToken) {
   if(isStringReturn) {
     StringResult value = {0};
     
-    if(isFunctionCallLookingAtLparen) {
+    if(isFunctionCallLookingAtLparen && FindBuiltin(afterReturn.value) != -1) {
+      BuiltinCallResult call = ParseBuiltinCall(FindBuiltin(afterReturn.value), afterReturn);
+      
+      value.next = call.next;
+      value.srcVarIndex = -1;
+      value.sourceFromArgStack = 1;
+    } else if(isFunctionCallLookingAtLparen) {
       int funcIndex = FindFunction(afterReturn.value);
       FunctionCallResult call = ParseFunctionCallArgs(funcIndex, afterReturn);
       
@@ -3767,6 +4448,28 @@ Token ParseReturnStatement(Token returnToken) {
     
     if(afterReturn.type == TOKEN_KW_NOT) {
       condResult = ParseNotExpr(afterReturn);
+    } else if(isFunctionCallLookingAtLparen && strcmp(afterReturn.value, "len") == 0) {
+      ExprResult numResult = ParseLenCall(afterReturn);
+      
+      numResult = ParseNumericTermTail(numResult);
+      numResult = ParseNumericExpressionTail(numResult);
+      
+      condResult.next = numResult.next;
+      condResult.type = numResult.type;
+    } else if(isFunctionCallLookingAtLparen && FindBuiltin(afterReturn.value) != -1 &&
+              builtinTable[FindBuiltin(afterReturn.value)].returnKind != RET_STR) {
+      BuiltinCallResult call = ParseBuiltinCall(FindBuiltin(afterReturn.value), afterReturn);
+      
+      ExprResult numResult = {0};
+      
+      numResult.next = call.next;
+      numResult.type = call.type;
+      
+      numResult = ParseNumericTermTail(numResult);
+      numResult = ParseNumericExpressionTail(numResult);
+      
+      condResult.next = numResult.next;
+      condResult.type = numResult.type;
     } else if(isFunctionCallLookingAtLparen) {
       int funcIndex = FindFunction(afterReturn.value);
       
@@ -3890,6 +4593,26 @@ Token ParseStatement(Token token) {
     EmitInstruction(instruction);
     
     return LexerNext();
+  }
+  
+  if(token.type == TOKEN_IDENTIFIER && strcmp(token.value, "sscanf") == 0) {
+    Token afterName = LexerNext();
+    
+    if(afterName.type == TOKEN_LPAREN) {
+      return ParseSscanfStatement(token);
+    }
+    
+    return ParseIdentifierStatementFrom(token, afterName, TOKEN_SEMICOLON);
+  }
+  
+  if(token.type == TOKEN_IDENTIFIER && strcmp(token.value, "split") == 0) {
+    Token afterName = LexerNext();
+    
+    if(afterName.type == TOKEN_LPAREN) {
+      return ParseSplitStatement(token);
+    }
+    
+    return ParseIdentifierStatementFrom(token, afterName, TOKEN_SEMICOLON);
   }
   
   if(token.type == TOKEN_IDENTIFIER) {

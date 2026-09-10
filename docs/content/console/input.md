@@ -65,5 +65,6 @@ This form is a statement on its own — it can't be assigned to a variable or us
 
 - [print](content/console/print.md)
 - [format()](content/strings/format.md)
+- [sscanf()](content/strings/sscanf.md)
 - [str](content/data-types/str.md)
 - [String Comparison](content/strings/string-comparison.md)

@@ -82,11 +82,57 @@ typedef enum {
   OP_DISCARD_RETURNED_ARR,
   
   // format() / print "..", args / input "..", args -- see the fields below
+  // format() / print "..", args / input "..", args / other builtin function
+  // calls (see OP_CALL_BUILTIN below) -- OP_FORMAT_ARG_BEGIN/OP_FORMAT_ARG
+  // collect a call's arguments (with their types) in order, onto a stack
+  // that supports nesting; OP_FORMAT_STRING or OP_CALL_BUILTIN then consumes
+  // the top (innermost) argument list to produce a result.
   OP_FORMAT_ARG_BEGIN,
   OP_FORMAT_ARG,
   OP_FORMAT_STRING,
-  OP_SCAN_STRING
+  OP_SCAN_STRING,
+  
+  // Built-in functions (int(), float(), str(), len(), abs(), min(), max(),
+  // pow(), sqrt(), round(), floor(), ceil(), upper(), lower(), trim(),
+  // random()) -- see BuiltinId in elvm.c. Arguments are pushed the same way
+  // a user function call's arguments are (numeric stack or string stack,
+  // depending on type), then this single instruction pops them, runs the
+  // native implementation, and pushes the result.
+  OP_CALL_BUILTIN,
+  
+  // sscanf(source, "<fmt>", var1, var2, ...) -- like OP_SCAN_STRING, but the
+  // text to parse is a string value/expression instead of a line read from
+  // stdin.
+  OP_SSCANF,
+  
+  // split(source, var1, var2, ...) -- splits 'source' on whitespace into
+  // var1, var2, ... (always strings), the same tokenizing OP_SCAN_STRING and
+  // OP_SSCANF use, just with no format string of its own.
+  OP_SPLIT
 } Opcode;
+
+// Which native implementation OP_CALL_BUILTIN should run. len() only
+// appears here for a str argument -- len() on an array is resolved entirely
+// at compile time (the array's size is already known then), so it never
+// reaches this list.
+typedef enum {
+  BUILTIN_INT,
+  BUILTIN_FLOAT,
+  BUILTIN_STR,
+  BUILTIN_LEN,
+  BUILTIN_ABS,
+  BUILTIN_MIN,
+  BUILTIN_MAX,
+  BUILTIN_POW,
+  BUILTIN_SQRT,
+  BUILTIN_ROUND,
+  BUILTIN_FLOOR,
+  BUILTIN_CEIL,
+  BUILTIN_UPPER,
+  BUILTIN_LOWER,
+  BUILTIN_TRIM,
+  BUILTIN_RANDOM
+} BuiltinId;
 
 // Supported variable types
 typedef enum {
@@ -227,6 +273,16 @@ typedef struct {
   int* scanVarIndex;
   int* scanVarIsLocal;
   int scanVarCount;
+  
+  // Format string for OP_SSCANF specifically -- separate from stringLiteral,
+  // since that field is already used to resolve sscanf's SOURCE string when
+  // the source itself is a literal. Always a literal (checked at compile
+  // time), unlike the source, which can be any string expression.
+  char* scanFormat;
+  
+  // Which built-in function OP_CALL_BUILTIN should run -- see BuiltinId in
+  // elvm.c.
+  int builtinId;
 } Instruction;
 
 // Execute bytecode

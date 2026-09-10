@@ -82,6 +82,11 @@
           "match": "\\b(format)\\b"
         },
         {
+          "comment": "Built-in functions added in v0.7.0b -- type conversion, string parsing, math, and string utilities",
+          "name": "support.function.builtin.ellang",
+          "match": "\\b(len|sscanf|split|abs|min|max|pow|sqrt|round|floor|ceil|upper|lower|trim|random)\\b"
+        },
+        {
           "name": "storage.type.var.ellang",
           "match": "\\b(var)\\b"
         },

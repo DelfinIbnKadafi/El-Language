@@ -39,6 +39,10 @@
     "str": {
       "file_md": "content/data-types/str.md",
       "desc": "The str data type, including sized strings and truncation."
+    },
+    "Type Conversion": {
+      "file_md": "content/data-types/type-conversion.md",
+      "desc": "Converting between int, float, and str with int(), float(), and str()."
     }
   },
   "NONE Value": {
@@ -79,6 +83,14 @@
     "Arithmetic": {
       "file_md": "content/math/arithmetic.md",
       "desc": "Arithmetic operators, operator precedence, and int/float division rules."
+    },
+    "Math Functions": {
+      "file_md": "content/math/math-functions.md",
+      "desc": "abs(), min(), max(), pow(), sqrt(), round(), floor(), and ceil()."
+    },
+    "random()": {
+      "file_md": "content/math/random.md",
+      "desc": "Generating a random whole number in a range."
     }
   },
   "Strings": {
@@ -93,6 +105,18 @@
     "format()": {
       "file_md": "content/strings/format.md",
       "desc": "Building a string from a template with %s, %d, %f, and %b specifiers."
+    },
+    "String Functions": {
+      "file_md": "content/strings/string-functions.md",
+      "desc": "len(), upper(), lower(), and trim()."
+    },
+    "sscanf()": {
+      "file_md": "content/strings/sscanf.md",
+      "desc": "Reading values out of a string with a C-style format template."
+    },
+    "split()": {
+      "file_md": "content/strings/split.md",
+      "desc": "Splitting a string on whitespace into separate variables."
     }
   },
   "Console": {

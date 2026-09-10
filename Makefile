@@ -3,6 +3,7 @@
 CC = gcc
 
 CFLAGS = -Wall -Wextra -std=c99
+LDLIBS = -lm
 
 SRC = src
 
@@ -24,7 +25,7 @@ $(TARGET): $(FILES)
 	mkdir -p $(BUILD)
 
 	# Compile El VM
-	$(CC) $(CFLAGS) $(FILES) -o $(TARGET)
+	$(CC) $(CFLAGS) $(FILES) -o $(TARGET) $(LDLIBS)
 
 
 clean:

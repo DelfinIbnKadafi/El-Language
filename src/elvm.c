@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
+#include <time.h>
+#include <ctype.h>
 #include "elvm.h"
 
 // Sized generously since recursive functions can leave several pending
@@ -17,6 +20,13 @@ int variableSlotCount = 0;
 
 // Source filename, used for error messages
 char* currentFilename;
+
+// NONE status of the value most recently pushed by OP_PUSH_VAR / OP_PUSH_ARR,
+// used to implement "== NONE" checks and bare "x = y;" NONE propagation
+int lastPushedIsNone;
+
+// Push a value onto the numeric evaluation stack (see 'double stack[]' below).
+void Push(double value);
 
 Variable* variables;
 int variableCount = 0;
@@ -122,6 +132,209 @@ void BeginFormatArgs() {
   list->count = 0;
   list->capacity = 0;
   list->args = NULL;
+}
+
+// Parse 'text' as a number only if the ENTIRE text is a valid number (not
+// just a leading prefix of it) -- used by int()/float() so "12abc" is
+// rejected instead of silently becoming 12.
+int ParseFullNumber(const char* text, double* out) {
+  char* end = NULL;
+  double value = strtod(text, &end);
+  
+  if(end == text || *end != '\0') {
+    return 0;
+  }
+  
+  *out = value;
+  return 1;
+}
+
+// Run a built-in function given its already-collected, type-tagged argument
+// list, and leave the result on whichever stack matches its type (the
+// numeric stack for int/float/bool, or the string stack for str) -- exactly
+// like a user function's return value would be.
+void RunBuiltin(int builtinId, FormatArgList* args, int line) {
+  switch(builtinId) {
+    case BUILTIN_INT:
+    case BUILTIN_FLOAT: {
+      FormatArg a = args->args[0];
+      int isNone = a.isNone;
+      double value = 0;
+      
+      if(!isNone) {
+        if(a.type == VAR_STR) {
+          if(!ParseFullNumber(a.stringValue, &value)) {
+            isNone = 1;
+          }
+        } else {
+          value = a.numberValue;
+        }
+        
+        if(builtinId == BUILTIN_INT) {
+          value = (double) (long long) value;
+        }
+      }
+      
+      Push(isNone ? 0 : value);
+      lastPushedIsNone = isNone;
+      break;
+    }
+    case BUILTIN_STR: {
+      FormatArg a = args->args[0];
+      char piece[64];
+      
+      if(a.isNone) {
+        strcpy(piece, "NONE");
+      } else if(a.type == VAR_STR) {
+        PushStringValue(a.stringValue);
+        stringValueStackIsNone[stringValueStackTop - 1] = 0;
+        break;
+      } else if(a.type == VAR_BOOL) {
+        strcpy(piece, a.numberValue != 0 ? "true" : "false");
+      } else if(a.type == VAR_INT) {
+        sprintf(piece, "%d", (int) a.numberValue);
+      } else {
+        sprintf(piece, "%g", a.numberValue);
+      }
+      
+      PushStringValue(piece);
+      stringValueStackIsNone[stringValueStackTop - 1] = 0;
+      break;
+    }
+    case BUILTIN_LEN: {
+      FormatArg a = args->args[0];
+      
+      if(a.isNone) {
+        Push(0);
+        lastPushedIsNone = 1;
+      } else {
+        Push((double) strlen(a.stringValue));
+        lastPushedIsNone = 0;
+      }
+      break;
+    }
+    case BUILTIN_ABS: {
+      FormatArg a = args->args[0];
+      
+      Push(a.isNone ? 0 : fabs(a.numberValue));
+      lastPushedIsNone = a.isNone;
+      break;
+    }
+    case BUILTIN_MIN:
+    case BUILTIN_MAX: {
+      // NONE behaves like 0 here, the same as everywhere else numbers are
+      // combined (e.g. "NONE + 1" is 1) -- min()/max() aren't exceptions.
+      double a = args->args[0].isNone ? 0 : args->args[0].numberValue;
+      double b = args->args[1].isNone ? 0 : args->args[1].numberValue;
+      
+      Push(builtinId == BUILTIN_MIN ? fmin(a, b) : fmax(a, b));
+      lastPushedIsNone = 0;
+      break;
+    }
+    case BUILTIN_POW: {
+      double base = args->args[0].isNone ? 0 : args->args[0].numberValue;
+      double exp = args->args[1].isNone ? 0 : args->args[1].numberValue;
+      
+      Push(pow(base, exp));
+      lastPushedIsNone = 0;
+      break;
+    }
+    case BUILTIN_SQRT: {
+      double value = args->args[0].isNone ? 0 : args->args[0].numberValue;
+      
+      if(value < 0) {
+        printf("%s (%d) : sqrt() of a negative number\n", currentFilename, line);
+        exit(1);
+      }
+      
+      Push(sqrt(value));
+      lastPushedIsNone = 0;
+      break;
+    }
+    case BUILTIN_ROUND:
+    case BUILTIN_FLOOR:
+    case BUILTIN_CEIL: {
+      FormatArg a = args->args[0];
+      double result = 0;
+      
+      if(!a.isNone) {
+        result = builtinId == BUILTIN_ROUND ? round(a.numberValue) :
+          builtinId == BUILTIN_FLOOR ? floor(a.numberValue) : ceil(a.numberValue);
+      }
+      
+      Push(result);
+      lastPushedIsNone = a.isNone;
+      break;
+    }
+    case BUILTIN_UPPER:
+    case BUILTIN_LOWER: {
+      FormatArg a = args->args[0];
+      
+      if(a.isNone) {
+        PushStringValue("");
+        stringValueStackIsNone[stringValueStackTop - 1] = 1;
+      } else {
+        char* text = DupString(a.stringValue);
+        
+        for(int i = 0; text[i] != '\0'; i++) {
+          text[i] = builtinId == BUILTIN_UPPER ? toupper((unsigned char) text[i]) : tolower((unsigned char) text[i]);
+        }
+        
+        PushStringValue(text);
+        stringValueStackIsNone[stringValueStackTop - 1] = 0;
+        free(text);
+      }
+      
+      break;
+    }
+    case BUILTIN_TRIM: {
+      FormatArg a = args->args[0];
+      
+      if(a.isNone) {
+        PushStringValue("");
+        stringValueStackIsNone[stringValueStackTop - 1] = 1;
+      } else {
+        int start = 0;
+        int end = (int) strlen(a.stringValue);
+        
+        while(isspace((unsigned char) a.stringValue[start])) {
+          start++;
+        }
+        
+        while(end > start && isspace((unsigned char) a.stringValue[end - 1])) {
+          end--;
+        }
+        
+        char* text = malloc(end - start + 1);
+        memcpy(text, a.stringValue + start, end - start);
+        text[end - start] = '\0';
+        
+        PushStringValue(text);
+        stringValueStackIsNone[stringValueStackTop - 1] = 0;
+        free(text);
+      }
+      
+      break;
+    }
+    case BUILTIN_RANDOM: {
+      double minVal = args->args[0].isNone ? 0 : args->args[0].numberValue;
+      double maxVal = args->args[1].isNone ? 0 : args->args[1].numberValue;
+      long long lo = (long long) minVal;
+      long long hi = (long long) maxVal;
+      
+      if(lo > hi) {
+        printf("%s (%d) : random(): min is greater than max\n", currentFilename, line);
+        exit(1);
+      }
+      
+      long long span = hi - lo + 1;
+      long long result = lo + (long long) (((double) rand() / ((double) RAND_MAX + 1)) * (double) span);
+      
+      Push((double) result);
+      lastPushedIsNone = 0;
+      break;
+    }
+  }
 }
 
 // Append one already-evaluated argument to the current (innermost) format()
@@ -292,10 +505,6 @@ int returnedArrStackTop = 0;
 // Evaluation stack, used for numeric expression math (int, float, bool, comparisons, indices)
 double stack[MAX_STACK];
 int stackTop = 0;
-
-// NONE status of the value most recently pushed by OP_PUSH_VAR / OP_PUSH_ARR,
-// used to implement "== NONE" checks and bare "x = y;" NONE propagation
-int lastPushedIsNone;
 
 // Push value onto evaluation stack
 void Push(double value) {
@@ -552,12 +761,254 @@ Variable* BindLocalSlot(int varIndex) {
   return localSlots[varIndex];
 }
 
+// Split 'text' into whitespace-delimited tokens. Each token is a freshly
+// heap-allocated, unbounded string; the array itself is also heap-allocated.
+// Caller owns both and must free them (see FreeTokens).
+char** TokenizeWhitespace(const char* text, int* outCount) {
+  int tokenCount = 0;
+  int tokenCapacity = 8;
+  char** tokens = malloc(tokenCapacity * sizeof(char*));
+  
+  int i = 0;
+  
+  while(text[i] != '\0') {
+    while(text[i] == ' ' || text[i] == '\t') {
+      i++;
+    }
+    
+    if(text[i] == '\0') {
+      break;
+    }
+    
+    int start = i;
+    
+    while(text[i] != '\0' && text[i] != ' ' && text[i] != '\t') {
+      i++;
+    }
+    
+    if(tokenCount >= tokenCapacity) {
+      tokenCapacity *= 2;
+      tokens = realloc(tokens, tokenCapacity * sizeof(char*));
+    }
+    
+    int len = i - start;
+    
+    tokens[tokenCount] = malloc(len + 1);
+    memcpy(tokens[tokenCount], &text[start], len);
+    tokens[tokenCount][len] = '\0';
+    tokenCount++;
+  }
+  
+  *outCount = tokenCount;
+  return tokens;
+}
+
+void FreeTokens(char** tokens, int tokenCount) {
+  for(int i = 0; i < tokenCount; i++) {
+    free(tokens[i]);
+  }
+  
+  free(tokens);
+}
+
+// Walk a format string for %s/%d/%f/%b specifiers, assigning one token per
+// specifier (in order) into the matching destination variable, converted
+// per its specifier. A destination with no token left to fill it, or whose
+// token doesn't validly match its specifier, becomes NONE -- shared by
+// OP_SCAN_STRING (input "<fmt>", ...) and OP_SSCANF (sscanf(src, "<fmt>", ...)).
+void AssignScannedTokens(char** tokens, int tokenCount, const char* fmt,
+    int* scanVarIndex, int* scanVarIsLocal, int scanVarCount) {
+  int specifierIndex = 0;
+  int fmtLen = fmt == NULL ? 0 : (int) strlen(fmt);
+  
+  for(int i = 0; i < fmtLen && specifierIndex < scanVarCount; i++) {
+    if(fmt[i] != '%' || (fmt[i + 1] != 's' && fmt[i + 1] != 'd' && fmt[i + 1] != 'f' && fmt[i + 1] != 'b')) {
+      continue;
+    }
+    
+    char specifier = fmt[i + 1];
+    i++;
+    
+    Variable* dest = ResolveVariable(scanVarIndex[specifierIndex], scanVarIsLocal[specifierIndex]);
+    int haveToken = specifierIndex < tokenCount;
+    
+    if(specifier == 's') {
+      if(haveToken) {
+        strncpy(dest->strings[0], tokens[specifierIndex], dest->strSize);
+        dest->strings[0][dest->strSize] = '\0';
+        dest->isNone[0] = 0;
+      } else {
+        dest->isNone[0] = 1;
+      }
+    } else if(specifier == 'b') {
+      if(haveToken && strcmp(tokens[specifierIndex], "true") == 0) {
+        dest->numbers[0] = 1;
+        dest->isNone[0] = 0;
+      } else if(haveToken && strcmp(tokens[specifierIndex], "false") == 0) {
+        dest->numbers[0] = 0;
+        dest->isNone[0] = 0;
+      } else {
+        dest->isNone[0] = 1;
+      }
+    } else {
+      char* end = NULL;
+      double parsed = haveToken ? strtod(tokens[specifierIndex], &end) : 0;
+      int validNumber = haveToken && end != tokens[specifierIndex] && *end == '\0';
+      
+      if(validNumber) {
+        dest->numbers[0] = parsed;
+        dest->isNone[0] = 0;
+      } else {
+        dest->isNone[0] = 1;
+      }
+    }
+    
+    specifierIndex++;
+  }
+  
+  for(; specifierIndex < scanVarCount; specifierIndex++) {
+    Variable* dest = ResolveVariable(scanVarIndex[specifierIndex], scanVarIsLocal[specifierIndex]);
+    
+    dest->isNone[0] = 1;
+  }
+}
+
+// Assign one token per destination (in order), always as plain text -- no
+// format string, no type conversion. Used by split(). A destination with no
+// token left to fill it becomes NONE, same as AssignScannedTokens.
+void AssignSplitTokens(char** tokens, int tokenCount, int* scanVarIndex, int* scanVarIsLocal, int scanVarCount) {
+  for(int i = 0; i < scanVarCount; i++) {
+    Variable* dest = ResolveVariable(scanVarIndex[i], scanVarIsLocal[i]);
+    
+    if(i < tokenCount) {
+      strncpy(dest->strings[0], tokens[i], dest->strSize);
+      dest->strings[0][dest->strSize] = '\0';
+      dest->isNone[0] = 0;
+    } else {
+      dest->isNone[0] = 1;
+    }
+  }
+}
+
+// Real C sscanf()-style matching: walks 'fmt' and 'src' together. A literal
+// character in fmt (not part of a %specifier) must match the corresponding
+// character in src; whitespace in fmt matches any amount (including none)
+// of whitespace in src, exactly like C's sscanf. At a %s/%d/%f/%b, leading
+// whitespace in src is skipped, then a token is read and converted per its
+// specifier. The moment anything fails to match or convert -- a literal
+// mismatch, or a specifier with no valid value left to read -- that
+// destination and every destination after it become NONE, mirroring how
+// C's sscanf stops at the first failed conversion.
+void RunSscanf(const char* fmt, const char* src, int* scanVarIndex, int* scanVarIsLocal, int scanVarCount) {
+  int fi = 0;
+  int si = 0;
+  int varIndex = 0;
+  int failed = 0;
+  
+  while(fmt[fi] != '\0' && !failed) {
+    if(fmt[fi] == '%' && fmt[fi + 1] == '%') {
+      if(src[si] == '%') {
+        si++;
+        fi += 2;
+      } else {
+        failed = 1;
+      }
+      continue;
+    }
+    
+    if(fmt[fi] == '%' && (fmt[fi + 1] == 's' || fmt[fi + 1] == 'd' || fmt[fi + 1] == 'f' || fmt[fi + 1] == 'b')) {
+      char specifier = fmt[fi + 1];
+      
+      fi += 2;
+      
+      while(isspace((unsigned char) src[si])) {
+        si++;
+      }
+      
+      Variable* dest = ResolveVariable(scanVarIndex[varIndex], scanVarIsLocal[varIndex]);
+      
+      if(specifier == 's') {
+        int start = si;
+        
+        while(src[si] != '\0' && !isspace((unsigned char) src[si])) {
+          si++;
+        }
+        
+        if(si == start) {
+          dest->isNone[0] = 1;
+          failed = 1;
+        } else {
+          int len = si - start;
+          int copyLen = len < dest->strSize ? len : dest->strSize;
+          
+          memcpy(dest->strings[0], src + start, copyLen);
+          dest->strings[0][copyLen] = '\0';
+          dest->isNone[0] = 0;
+        }
+      } else if(specifier == 'b') {
+        int len = (int) strlen(src + si);
+        
+        if(len >= 4 && strncmp(src + si, "true", 4) == 0 && (len == 4 || isspace((unsigned char) src[si + 4]))) {
+          dest->numbers[0] = 1;
+          dest->isNone[0] = 0;
+          si += 4;
+        } else if(len >= 5 && strncmp(src + si, "false", 5) == 0 && (len == 5 || isspace((unsigned char) src[si + 5]))) {
+          dest->numbers[0] = 0;
+          dest->isNone[0] = 0;
+          si += 5;
+        } else {
+          dest->isNone[0] = 1;
+          failed = 1;
+        }
+      } else {
+        char* end = NULL;
+        double value = strtod(src + si, &end);
+        
+        if(end == src + si) {
+          dest->isNone[0] = 1;
+          failed = 1;
+        } else {
+          dest->numbers[0] = value;
+          dest->isNone[0] = 0;
+          si = (int) (end - src);
+        }
+      }
+      
+      varIndex++;
+      continue;
+    }
+    
+    if(isspace((unsigned char) fmt[fi])) {
+      while(isspace((unsigned char) src[si])) {
+        si++;
+      }
+      
+      fi++;
+      continue;
+    }
+    
+    if(src[si] == fmt[fi]) {
+      si++;
+      fi++;
+    } else {
+      failed = 1;
+    }
+  }
+  
+  for(; varIndex < scanVarCount; varIndex++) {
+    Variable* dest = ResolveVariable(scanVarIndex[varIndex], scanVarIsLocal[varIndex]);
+    
+    dest->isNone[0] = 1;
+  }
+}
+
 void VMRun(Instruction* code, int count, char* filename) {
   int ip = 0;
   
   currentFilename = filename;
   
   InitVariableStorage();
+  srand((unsigned int) time(NULL));
   
   while(ip < count) {
     Instruction instruction = code[ip++];
@@ -1301,6 +1752,15 @@ void VMRun(Instruction* code, int count, char* filename) {
         free(result);
         break;
       }
+      case OP_CALL_BUILTIN: {
+        FormatArgList* list = &formatArgListStack[formatArgListTop - 1];
+        
+        RunBuiltin(instruction.builtinId, list, instruction.line);
+        
+        FreeFormatArgList(list);
+        formatArgListTop--;
+        break;
+      }
       case OP_SCAN_STRING: {
         int fmtIsNone = 0;
         char* fmt = ResolveStoreSource(instruction, &fmtIsNone);
@@ -1313,104 +1773,38 @@ void VMRun(Instruction* code, int count, char* filename) {
           line[strcspn(line, "\r\n")] = '\0';
         }
         
-        // Split the read line into whitespace-delimited tokens.
         int tokenCount = 0;
-        int tokenCapacity = 8;
-        char** tokens = malloc(tokenCapacity * sizeof(char*));
+        char** tokens = TokenizeWhitespace(gotLine ? line : "", &tokenCount);
         
-        if(gotLine) {
-          int i = 0;
-          
-          while(line[i] != '\0') {
-            while(line[i] == ' ' || line[i] == '\t') {
-              i++;
-            }
-            
-            if(line[i] == '\0') {
-              break;
-            }
-            
-            int start = i;
-            
-            while(line[i] != '\0' && line[i] != ' ' && line[i] != '\t') {
-              i++;
-            }
-            
-            if(tokenCount >= tokenCapacity) {
-              tokenCapacity *= 2;
-              tokens = realloc(tokens, tokenCapacity * sizeof(char*));
-            }
-            
-            int len = i - start;
-            
-            tokens[tokenCount] = malloc(len + 1);
-            memcpy(tokens[tokenCount], &line[start], len);
-            tokens[tokenCount][len] = '\0';
-            tokenCount++;
-          }
-        }
+        AssignScannedTokens(tokens, tokenCount, fmtIsNone ? NULL : fmt,
+          instruction.scanVarIndex, instruction.scanVarIsLocal, instruction.scanVarCount);
         
-        // Walk the format string for specifiers, assigning one token per
-        // specifier into the matching destination variable, in order. A
-        // destination with no token left to fill it becomes NONE, matching
-        // how a declared-but-unassigned variable behaves everywhere else.
-        int specifierIndex = 0;
-        int fmtLen = fmtIsNone ? 0 : (int) strlen(fmt);
-        
-        for(int i = 0; i < fmtLen && specifierIndex < instruction.scanVarCount; i++) {
-          if(fmt[i] != '%' || (fmt[i + 1] != 's' && fmt[i + 1] != 'd' && fmt[i + 1] != 'f' && fmt[i + 1] != 'b')) {
-            continue;
-          }
-          
-          char specifier = fmt[i + 1];
-          i++;
-          
-          Variable* dest = ResolveVariable(instruction.scanVarIndex[specifierIndex], instruction.scanVarIsLocal[specifierIndex]);
-          int haveToken = specifierIndex < tokenCount;
-          
-          if(specifier == 's') {
-            if(haveToken) {
-              strncpy(dest->strings[0], tokens[specifierIndex], dest->strSize);
-              dest->strings[0][dest->strSize] = '\0';
-              dest->isNone[0] = 0;
-            } else {
-              dest->isNone[0] = 1;
-            }
-          } else if(specifier == 'b') {
-            if(haveToken) {
-              dest->numbers[0] = strcmp(tokens[specifierIndex], "true") == 0 ? 1 : 0;
-              dest->isNone[0] = 0;
-            } else {
-              dest->isNone[0] = 1;
-            }
-          } else {
-            if(haveToken) {
-              dest->numbers[0] = atof(tokens[specifierIndex]);
-              dest->isNone[0] = 0;
-            } else {
-              dest->isNone[0] = 1;
-            }
-          }
-          
-          specifierIndex++;
-        }
-        
-        // Any destination beyond what the format string had specifiers for
-        // (only possible if the format string wasn't a literal, so this
-        // couldn't be caught at compile time) becomes NONE too.
-        for(; specifierIndex < instruction.scanVarCount; specifierIndex++) {
-          Variable* dest = ResolveVariable(instruction.scanVarIndex[specifierIndex], instruction.scanVarIsLocal[specifierIndex]);
-          
-          dest->isNone[0] = 1;
-        }
-        
-        for(int i = 0; i < tokenCount; i++) {
-          free(tokens[i]);
-        }
-        
-        free(tokens);
+        FreeTokens(tokens, tokenCount);
         free(line);
         free(fmt);
+        break;
+      }
+      case OP_SSCANF: {
+        int srcIsNone = 0;
+        char* src = ResolveStoreSource(instruction, &srcIsNone);
+        
+        RunSscanf(instruction.scanFormat, srcIsNone ? "" : src,
+          instruction.scanVarIndex, instruction.scanVarIsLocal, instruction.scanVarCount);
+        
+        free(src);
+        break;
+      }
+      case OP_SPLIT: {
+        int srcIsNone = 0;
+        char* src = ResolveStoreSource(instruction, &srcIsNone);
+        
+        int tokenCount = 0;
+        char** tokens = TokenizeWhitespace(srcIsNone ? "" : src, &tokenCount);
+        
+        AssignSplitTokens(tokens, tokenCount, instruction.scanVarIndex, instruction.scanVarIsLocal, instruction.scanVarCount);
+        
+        FreeTokens(tokens, tokenCount);
+        free(src);
         break;
       }
       case OP_HALT:
