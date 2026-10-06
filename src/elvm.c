@@ -1,6 +1,3 @@
-// Needed for getline() under -std=c99 (unlimited-length input reading)
-#define _POSIX_C_SOURCE 200809L
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1002,6 +999,45 @@ void RunSscanf(const char* fmt, const char* src, int* scanVarIndex, int* scanVar
   }
 }
 
+static char* ReadLine(FILE* stream) {
+  char* line = NULL;
+  size_t length = 0;
+  size_t capacity = 0;
+  int character;
+  
+  while((character = fgetc(stream)) != EOF) {
+    if(length + 1 >= capacity) {
+      size_t nextCapacity = capacity ? capacity * 2 : 128;
+      if(nextCapacity <= capacity) {
+        free(line);
+        return NULL;
+      }
+      
+      char* resized = realloc(line, nextCapacity);
+      if(resized == NULL) {
+        free(line);
+        return NULL;
+      }
+      
+      line = resized;
+      capacity = nextCapacity;
+    }
+    
+    line[length++] = (char) character;
+    if(character == '\n') {
+      break;
+    }
+  }
+  
+  if(length == 0) {
+    free(line);
+    return NULL;
+  }
+  
+  line[length] = '\0';
+  return line;
+}
+
 void VMRun(Instruction* code, int count, char* filename) {
   int ip = 0;
   
@@ -1693,12 +1729,9 @@ void VMRun(Instruction* code, int count, char* filename) {
           exit(1);
         }
         
-        // getline grows its own buffer as needed, so a typed line has no
-        // fixed length limit.
-        char* line = NULL;
-        size_t lineCapacity = 0;
+        char* line = ReadLine(stdin);
         
-        if(getline(&line, &lineCapacity, stdin) == -1) {
+        if(line == NULL) {
           // EOF or a read error: nothing meaningful was entered
           PushStringValue("");
           stringValueStackIsNone[stringValueStackTop - 1] = 1;
@@ -1765,9 +1798,8 @@ void VMRun(Instruction* code, int count, char* filename) {
         int fmtIsNone = 0;
         char* fmt = ResolveStoreSource(instruction, &fmtIsNone);
         
-        char* line = NULL;
-        size_t lineCapacity = 0;
-        int gotLine = getline(&line, &lineCapacity, stdin) != -1;
+        char* line = ReadLine(stdin);
+        int gotLine = line != NULL;
         
         if(gotLine) {
           line[strcspn(line, "\r\n")] = '\0';

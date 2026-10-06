@@ -9,7 +9,11 @@ SRC = src
 
 BUILD = compiler
 
+ifeq ($(OS),Windows_NT)
+TARGET = $(BUILD)/elvm.exe
+else
 TARGET = $(BUILD)/elvm
+endif
 
 FILES = \
   $(SRC)/main.c \
@@ -18,19 +22,18 @@ FILES = \
   $(SRC)/elvm.c
 
 
+.PHONY: all clean rebuild
+
 all: $(TARGET)
 
-$(TARGET): $(FILES)
-	# Create output directory
-	mkdir -p $(BUILD)
-
-	# Compile El VM
+$(TARGET): $(FILES) | $(BUILD)
 	$(CC) $(CFLAGS) $(FILES) -o $(TARGET) $(LDLIBS)
 
+$(BUILD):
+	mkdir -p $(BUILD)
 
 clean:
-	# Remove compiled files
-	rm -rf $(BUILD)/elvm
+	rm -f $(BUILD)/elvm $(BUILD)/elvm.exe
 
 
 rebuild: clean all
