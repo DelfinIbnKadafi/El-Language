@@ -124,6 +124,10 @@ else =
 
 Open https://el-lang.my.id/ for complete documentation of El Language.
 
+## Installations
+
+Open release tab and download the elvm that you want to download.
+
 ## License
 
 [Apache-2.0 License](LICENSE)
