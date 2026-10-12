@@ -20,19 +20,15 @@ Name: "{app}\library"
 
 [Files]
 Source: "elvm.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "ellib.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Registry]
-Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; \
-    ValueType: expandsz; ValueName: "Path"; \
-    ValueData: "{olddata};{app}"; \
-    Check: NeedsAddPath(ExpandConstant('{app}')); \
-    Flags: preservestringtype
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}')); Flags: preservestringtype
 
 [Code]
 function NeedsAddPath(Param: string): Boolean;
 var
   ExistingPath: string;
-  NormalizedPath: string;
 begin
   if not RegQueryStringValue(
     HKEY_LOCAL_MACHINE,
@@ -42,7 +38,6 @@ begin
   ) then
     ExistingPath := '';
 
-  NormalizedPath := ';' + Uppercase(ExistingPath) + ';';
   Result := Pos(';' + Uppercase(Param) + ';',
-    NormalizedPath) = 0;
+    ';' + Uppercase(ExistingPath) + ';') = 0;
 end;
