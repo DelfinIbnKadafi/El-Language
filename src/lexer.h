@@ -19,6 +19,8 @@ typedef enum {
   TOKEN_KW_AND,
   TOKEN_KW_NOT,
   TOKEN_KW_NONE,
+  TOKEN_KW_MODULE,
+  TOKEN_KW_LIBRARY,
   
   
   // data type
@@ -70,7 +72,7 @@ typedef enum {
   TOKEN_SEMICOLON,
   TOKEN_EOF,
   TOKEN_ERROR
-} TokenType;
+} LexerTokenType;
 
 // Max length used only for fixed-size name buffers elsewhere (variable and
 // function names). Token text itself is unbounded -- see Token.value below.
@@ -78,14 +80,15 @@ typedef enum {
 
 // Store token information
 typedef struct {
-  TokenType type;
+  LexerTokenType type;
   
   // Token text data. Heap-allocated and grown as needed, so identifiers and
   // string/number literals have no fixed length limit. NULL for token types
   // that carry no text (keywords, operators, symbols).
   char* value;
   
-  // Source line where token was read
+  // Source location where token was read: the line and the file it belongs
+  // to packed into one int -- see MakeLocation in source.h
   int line;
   
   // Source column where token was read, used for indentation-based blocks
@@ -95,8 +98,19 @@ typedef struct {
 // Initialize lexer source
 void LexerInit(char* source);
 
+// Start reading another source file in the middle of the current one, as if
+// its text was written right here (module / library). Once it ends, reading
+// continues in the file that was paused. 'fileId' is the id the file was
+// registered with in source.h. The lexer takes ownership of 'input' and frees
+// it when the file ends.
+void LexerPushSource(char* input, int fileId);
+
 // Read next token
 Token LexerNext();
+
+// Append one character to a growable buffer, doubling capacity as needed.
+// Always leaves room for a trailing '\0' after the append.
+void AppendChar(char** buffer, int* capacity, int* length, char c);
 
 // Copy a string onto the heap (stand-in for strdup, kept within -std=c99)
 char* DupString(const char* text);

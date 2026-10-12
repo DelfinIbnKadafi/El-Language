@@ -118,6 +118,14 @@ else =
   print "Cancelled.";
 ```
 
+### Modules & Libraries
+
+```el
+module "my_functions.ell";   // copy another file into this one
+library "mathx";             // load a library installed next to elvm
+
+print square(4);
+```
 
 ## Getting Started
 

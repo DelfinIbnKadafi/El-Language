@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "lexer.h"
+#include "source.h"
 
 // Copy a string onto the heap. Used instead of the non-standard strdup() to
 // stay within -std=c99.
@@ -30,11 +31,25 @@ char* source;
 // Current reading index
 int position;
 
-// Current source line
+// Current source location (line and file, see MakeLocation in source.h)
 int line;
 
 // Source index of the start of the current line, used to compute column
 int lineStart;
+
+// State of a file that is paused while an included file is being read
+typedef struct {
+  char* source;
+  int position;
+  int line;
+  int lineStart;
+} LexerState;
+
+// Paused files, innermost last. Grows as needed, so there's no fixed cap on
+// how deep includes can be nested.
+LexerState* pausedStates;
+int pausedCapacity = 0;
+int pausedCount = 0;
 
 // Check if character can be part of a word
 int IsWordChar(char c) {
@@ -51,14 +66,48 @@ void LexerInit(char* input) {
   // Reset lexer position
   position = 0;
   
-  // Reset line counter
-  line = 1;
+  // Reset line counter (the main file always has file id 0)
+  line = MakeLocation(0, 1);
   
   // Reset column tracking
   lineStart = 0;
 }
 
-Token LexerNext() {
+void LexerPushSource(char* input, int fileId) {
+  if(pausedCount >= pausedCapacity) {
+    pausedCapacity = pausedCapacity == 0 ? 8 : pausedCapacity * 2;
+    pausedStates = realloc(pausedStates, pausedCapacity * sizeof(LexerState));
+  }
+  
+  // Pause the current file exactly where it is
+  pausedStates[pausedCount].source = source;
+  pausedStates[pausedCount].position = position;
+  pausedStates[pausedCount].line = line;
+  pausedStates[pausedCount].lineStart = lineStart;
+  
+  pausedCount++;
+  
+  // Start the new file from its first line
+  source = input;
+  position = 0;
+  line = MakeLocation(fileId, 1);
+  lineStart = 0;
+}
+
+// Finish the current included file and go back to the one that was paused
+void LexerPopSource() {
+  free(source);
+  
+  pausedCount--;
+  
+  source = pausedStates[pausedCount].source;
+  position = pausedStates[pausedCount].position;
+  line = pausedStates[pausedCount].line;
+  lineStart = pausedStates[pausedCount].lineStart;
+}
+
+// Read next token from the current file only
+Token LexerReadToken() {
   Token token;
   
   // Most token types carry no text; only set for literals/identifiers/errors
@@ -206,6 +255,20 @@ Token LexerNext() {
     position += 8;
     
     token.type = TOKEN_KW_FUNCTION;
+    return token;
+  }
+  // Read module keyword
+  if(strncmp(&source[position], "module", 6) == 0 && !IsWordChar(source[position + 6])) {
+    position += 6;
+    
+    token.type = TOKEN_KW_MODULE;
+    return token;
+  }
+  // Read library keyword
+  if(strncmp(&source[position], "library", 7) == 0 && !IsWordChar(source[position + 7])) {
+    position += 7;
+    
+    token.type = TOKEN_KW_LIBRARY;
     return token;
   }
   // Read return keyword
@@ -555,4 +618,39 @@ Token LexerNext() {
   position++;
   
   return token;
+}
+
+// Set when an included file has just ended, until the next token is read, and
+// the location where the file that included it was paused
+int resumedAfterInclude = 0;
+int resumedLine = 0;
+
+Token LexerNext() {
+  while(1) {
+    Token token = LexerReadToken();
+    
+    // An included file ended, keep reading where the file that included it
+    // was paused. The end of an included file is never seen by the parser.
+    if(token.type == TOKEN_EOF && pausedCount > 0) {
+      LexerPopSource();
+      
+      resumedAfterInclude = 1;
+      resumedLine = line;
+      continue;
+    }
+    
+    // Code written after 'module "file.ell";' on the same line starts a new
+    // statement, so it is given the column of a statement at the start of a
+    // line. Otherwise its column would make it look like part of a block that
+    // was open at the end of the included file.
+    if(resumedAfterInclude) {
+      resumedAfterInclude = 0;
+      
+      if(token.line == resumedLine) {
+        token.column = 1;
+      }
+    }
+    
+    return token;
+  }
 }

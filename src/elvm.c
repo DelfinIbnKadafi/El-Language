@@ -5,6 +5,7 @@
 #include <time.h>
 #include <ctype.h>
 #include "elvm.h"
+#include "source.h"
 
 // Sized generously since recursive functions can leave several pending
 // values on this stack per nesting level (e.g. 'return 1 + f(n - 1);' keeps
@@ -15,7 +16,7 @@
 // program, set by main.c right before VMRun() -- see elvm.h.
 int variableSlotCount = 0;
 
-// Source filename, used for error messages
+// Name of the main source file, used for errors that have no line
 char* currentFilename;
 
 // NONE status of the value most recently pushed by OP_PUSH_VAR / OP_PUSH_ARR,
@@ -240,7 +241,7 @@ void RunBuiltin(int builtinId, FormatArgList* args, int line) {
       double value = args->args[0].isNone ? 0 : args->args[0].numberValue;
       
       if(value < 0) {
-        printf("%s (%d) : sqrt() of a negative number\n", currentFilename, line);
+        printf("%s (%d) : sqrt() of a negative number\n", LocationFile(line), LocationLine(line));
         exit(1);
       }
       
@@ -320,7 +321,7 @@ void RunBuiltin(int builtinId, FormatArgList* args, int line) {
       long long hi = (long long) maxVal;
       
       if(lo > hi) {
-        printf("%s (%d) : random(): min is greater than max\n", currentFilename, line);
+        printf("%s (%d) : random(): min is greater than max\n", LocationFile(line), LocationLine(line));
         exit(1);
       }
       
@@ -369,7 +370,7 @@ void AppendFormattedArg(char** out, int* outCap, int* outLen, char specifier, Fo
   
   if(specifier == 's') {
     if(arg.type != VAR_STR) {
-      printf("%s (%d) : Format specifier %%s expects a string argument\n", currentFilename, line);
+      printf("%s (%d) : Format specifier %%s expects a string argument\n", LocationFile(line), LocationLine(line));
       exit(1);
     }
     
@@ -387,14 +388,14 @@ void AppendFormattedArg(char** out, int* outCap, int* outLen, char specifier, Fo
   
   if(specifier == 'b') {
     if(arg.type != VAR_BOOL) {
-      printf("%s (%d) : Format specifier %%b expects a boolean argument\n", currentFilename, line);
+      printf("%s (%d) : Format specifier %%b expects a boolean argument\n", LocationFile(line), LocationLine(line));
       exit(1);
     }
     
     strcpy(piece, arg.isNone ? "NONE" : (arg.numberValue != 0 ? "true" : "false"));
   } else if(specifier == 'd') {
     if(arg.type != VAR_INT && arg.type != VAR_FLOAT) {
-      printf("%s (%d) : Format specifier %%d expects an int or float argument\n", currentFilename, line);
+      printf("%s (%d) : Format specifier %%d expects an int or float argument\n", LocationFile(line), LocationLine(line));
       exit(1);
     }
     
@@ -405,7 +406,7 @@ void AppendFormattedArg(char** out, int* outCap, int* outLen, char specifier, Fo
     }
   } else if(specifier == 'f') {
     if(arg.type != VAR_INT && arg.type != VAR_FLOAT) {
-      printf("%s (%d) : Format specifier %%f expects an int or float argument\n", currentFilename, line);
+      printf("%s (%d) : Format specifier %%f expects an int or float argument\n", LocationFile(line), LocationLine(line));
       exit(1);
     }
     
@@ -415,7 +416,7 @@ void AppendFormattedArg(char** out, int* outCap, int* outLen, char specifier, Fo
       sprintf(piece, "%g", arg.numberValue);
     }
   } else {
-    printf("%s (%d) : Unknown format specifier %%%c\n", currentFilename, line, specifier);
+    printf("%s (%d) : Unknown format specifier %%%c\n", LocationFile(line), LocationLine(line), specifier);
     exit(1);
   }
   
@@ -455,7 +456,7 @@ char* BuildFormattedString(const char* fmt, FormatArgList* list, int line) {
     
     if(fmt[i] == '%' && (fmt[i + 1] == 's' || fmt[i + 1] == 'd' || fmt[i + 1] == 'f' || fmt[i + 1] == 'b')) {
       if(argIndex >= list->count) {
-        printf("%s (%d) : Format string expects more arguments than were given\n", currentFilename, line);
+        printf("%s (%d) : Format string expects more arguments than were given\n", LocationFile(line), LocationLine(line));
         exit(1);
       }
       
@@ -477,7 +478,7 @@ char* BuildFormattedString(const char* fmt, FormatArgList* list, int line) {
   }
   
   if(argIndex < list->count) {
-    printf("%s (%d) : Format string was given more arguments than it uses\n", currentFilename, line);
+    printf("%s (%d) : Format string was given more arguments than it uses\n", LocationFile(line), LocationLine(line));
     exit(1);
   }
   
@@ -524,7 +525,7 @@ int CheckBounds(double rawIndex, int size, int line) {
   int index = (int) rawIndex;
   
   if(index < 0 || index >= size) {
-    printf("%s (%d) : Array index %d out of bounds (size %d)\n", currentFilename, line, index, size);
+    printf("%s (%d) : Array index %d out of bounds (size %d)\n", LocationFile(line), LocationLine(line), index, size);
     exit(1);
   }
   
@@ -546,7 +547,7 @@ void CheckAllocationSize(long count, long elementSize, int line) {
   
   if(totalBytes > MAX_SAFE_ALLOCATION_BYTES) {
     printf("%s (%d) : Requested storage (%.0f MB) exceeds the safety limit of %ld MB\n",
-      currentFilename, line, totalBytes / (1024 * 1024), MAX_SAFE_ALLOCATION_BYTES / (1024 * 1024));
+      LocationFile(line), LocationLine(line), totalBytes / (1024 * 1024), MAX_SAFE_ALLOCATION_BYTES / (1024 * 1024));
     exit(1);
   }
 }
@@ -593,7 +594,7 @@ void AllocateNumberStorage(Variable* v, int size, int line) {
   v->isNone = malloc(size * sizeof(int));
   
   if(v->numbers == NULL || v->isNone == NULL) {
-    printf("%s (%d) : Failed to allocate array of size %d\n", currentFilename, line, size);
+    printf("%s (%d) : Failed to allocate array of size %d\n", LocationFile(line), LocationLine(line), size);
     exit(1);
   }
 }
@@ -608,7 +609,7 @@ void AllocateStringStorage(Variable* v, int size, int strSize, int line) {
   v->isNone = malloc(size * sizeof(int));
   
   if(v->strings == NULL || v->isNone == NULL) {
-    printf("%s (%d) : Failed to allocate array of size %d\n", currentFilename, line, size);
+    printf("%s (%d) : Failed to allocate array of size %d\n", LocationFile(line), LocationLine(line), size);
     exit(1);
   }
   
@@ -616,7 +617,7 @@ void AllocateStringStorage(Variable* v, int size, int strSize, int line) {
     v->strings[i] = calloc(strSize + 1, sizeof(char));
     
     if(v->strings[i] == NULL) {
-      printf("%s (%d) : Failed to allocate string storage\n", currentFilename, line);
+      printf("%s (%d) : Failed to allocate string storage\n", LocationFile(line), LocationLine(line));
       exit(1);
     }
   }
@@ -704,7 +705,7 @@ char* ResolveStoreSource(Instruction instruction, int* outIsNone) {
 // instruction actually executes (see OP_DECLARE_* below), not here.
 void PushCallFrame(int returnAddress, int line) {
   if(callStackTop >= MAX_CALL_DEPTH) {
-    printf("%s (%d) : Stack overflow: too many nested/recursive function calls\n", currentFilename, line);
+    printf("%s (%d) : Stack overflow: too many nested/recursive function calls\n", LocationFile(line), LocationLine(line));
     exit(1);
   }
   
@@ -1356,7 +1357,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         double a = Pop();
         
         if(b == 0) {
-          printf("%s (%d) : Division by zero\n", filename, instruction.line);
+          printf("%s (%d) : Division by zero\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1368,7 +1369,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         double a = Pop();
         
         if(b == 0) {
-          printf("%s (%d) : Division by zero\n", filename, instruction.line);
+          printf("%s (%d) : Division by zero\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1530,7 +1531,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         // through returnedArrStack. Whoever consumes it on the caller side
         // is responsible for freeing it.
         if(returnedArrStackTop >= MAX_RETURNED_ARR_STACK) {
-          printf("%s (%d) : Stack overflow: too many nested array returns\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested array returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1612,7 +1613,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         int idx = CheckBounds(Pop(), src->arraySize, instruction.line);
         
         if(stringValueStackTop >= MAX_STRING_STACK) {
-          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1635,7 +1636,7 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_PUSH_STRING_VALUE: {
         if(stringValueStackTop >= MAX_STRING_STACK) {
-          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1664,7 +1665,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         // array parameter, without re-evaluating (and possibly re-running
         // a function call) for every element.
         if(stringValueStackTop >= MAX_STRING_STACK) {
-          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1688,7 +1689,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
         
         if(stringValueStackTop >= MAX_STRING_STACK) {
-          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1725,7 +1726,7 @@ void VMRun(Instruction* code, int count, char* filename) {
         }
         
         if(stringValueStackTop >= MAX_STRING_STACK) {
-          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
@@ -1747,7 +1748,7 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_FORMAT_ARG_BEGIN: {
         if(formatArgListTop >= MAX_FORMAT_NESTING) {
-          printf("%s (%d) : Stack overflow: too many nested format() calls\n", currentFilename, instruction.line);
+          printf("%s (%d) : Stack overflow: too many nested format() calls\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         

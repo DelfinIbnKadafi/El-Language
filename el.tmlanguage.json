@@ -70,6 +70,10 @@
           "match": "\\b(function)\\b"
         },
         {
+          "name": "keyword.control.import.ellang",
+          "match": "\\b(module|library)\\b"
+        },
+        {
           "name": "keyword.other.print.ellang",
           "match": "\\b(print)\\b"
         },

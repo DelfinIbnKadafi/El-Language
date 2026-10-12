@@ -22,14 +22,12 @@ Or download the compatible version in repository.
 Go to https://github.com/DelfinIbnKadafi/El-Language and find release tab and download 
 ELVM that compatible with your computer.
 
-If you using windows, you also install the installer in github relase tab.
-
 ## 2. Run the files
 
 Run using :
 
 ```bash
-./path_into_elvm files.ell
+./path_into_elvm file.ell
 ```
 
 Or
@@ -38,8 +36,15 @@ Or
 elvm.exe files.ell
 ```
 
-or if you use elvm installer
+## 3. Libraries (optional)
 
-```bash
-elvm files.ell
+Libraries used with `library "name";` are searched in a folder named `library` placed in the same folder as the `elvm` executable, not in the folder where you run your program.
+
 ```
+elvm
+library/
+  mathx/
+    library.json
+```
+
+See [Library](content/modules/library.md) and [Creating a Library](content/modules/creating-a-library.md).

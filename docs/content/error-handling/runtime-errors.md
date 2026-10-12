@@ -8,7 +8,7 @@ A runtime error means your program compiled successfully but ran into a problem 
 filename (line) : message
 ```
 
-`line` is the line number in your `.ell` file that triggered the error.
+`line` is the line number in your `.ell` file that triggered the error. If the error happens inside a function that came from [`module`](content/modules/module.md) or [`library`](content/modules/library.md), `filename` is the file where that function is written, and `line` is the line inside that file.
 
 ## Common Runtime Errors
 

@@ -3,31 +3,21 @@
 #include "lexer.h"
 #include "elvm.h"
 #include "parser.h"
+#include "source.h"
 
 // Load source file
 char* LoadFile(char* filename) {
-  FILE* file = fopen(filename, "r");
+  char* buffer = ReadFileText(filename);
   
-  if(file == NULL) {
+  if(buffer == NULL) {
     printf("Cannot open file\n");
     exit(1);
   }
   
-  // Get file size
-  fseek(file, 0, SEEK_END);
-  
-  long size = ftell(file);
-  
-  rewind(file);
-  
-  char* buffer = malloc(size + 1);
-  
-  // Read source content
-  fread(buffer, 1, size, file);
-  
-  buffer[size] = '\0';
-  
-  fclose(file);
+  if(!SourceTextFits(buffer)) {
+    printf("%s : File has too many lines\n", filename);
+    exit(1);
+  }
   
   return buffer;
 }
@@ -38,8 +28,14 @@ int main(int argc, char** argv) {
     return 1;
   }
   
+  // Remember where elvm is, libraries are searched next to it
+  SetExecutablePath(argv[0]);
+  
   // Remember filename for error messages
   sourceFilename = argv[1];
+  
+  // The main file is always the first registered source file (id 0)
+  AddSourceFile(argv[1], argv[1]);
   
   // Load El source
   char* source = LoadFile(argv[1]);

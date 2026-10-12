@@ -173,6 +173,20 @@
       "desc": "How EL supports recursive function calls."
     }
   },
+  "Modules & Libraries": {
+    "Module": {
+      "file_md": "content/modules/module.md",
+      "desc": "Splitting a program into several files with module."
+    },
+    "Library": {
+      "file_md": "content/modules/library.md",
+      "desc": "Loading a ready-made library by name with library."
+    },
+    "Creating a Library": {
+      "file_md": "content/modules/creating-a-library.md",
+      "desc": "The library folder layout and the library.json file."
+    }
+  },
   "Error Handling": {
     "Compile-Time Errors": {
       "file_md": "content/error-handling/compile-time-errors.md",

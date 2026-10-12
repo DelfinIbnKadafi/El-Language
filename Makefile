@@ -19,7 +19,9 @@ FILES = \
   $(SRC)/main.c \
   $(SRC)/parser.c \
   $(SRC)/lexer.c \
-  $(SRC)/elvm.c
+  $(SRC)/elvm.c \
+  $(SRC)/source.c \
+  $(SRC)/json.c
 
 
 .PHONY: all clean rebuild

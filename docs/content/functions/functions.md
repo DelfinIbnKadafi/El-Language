@@ -36,3 +36,4 @@ say_hello();
 - [Parameters](content/functions/parameters.md)
 - [Return](content/functions/return.md)
 - [Recursion](content/functions/recursion.md)
+- [Module](content/modules/module.md) (putting functions in another file)

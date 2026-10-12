@@ -7,6 +7,8 @@
 #include "lexer.h"
 #include "elvm.h"
 #include "parser.h"
+#include "source.h"
+#include "json.h"
 
 // Initial bytecode capacity
 #define INITIAL_BYTECODE_CAP 256
@@ -20,14 +22,14 @@ int bytecodeCount = 0;
 // Current bytecode capacity
 int bytecodeCap = 0;
 
-// Current source filename, used for error messages
+// Name of the main source file, passed on to VMRun()
 char* sourceFilename;
 
 // Print a compile error as "file (line) : message", then stop. Never returns.
 void CompileError(int line, char* format, ...) __attribute__((noreturn));
 
 void CompileError(int line, char* format, ...) {
-  printf("%s (%d) : ", sourceFilename, line);
+  printf("%s (%d) : ", LocationFile(line), LocationLine(line));
   
   va_list args;
   
@@ -398,8 +400,8 @@ CondResult ParseGeneralStringComparison(Token token);
 CondResult ParseAndExprTail(CondResult left);
 CondResult ParseOrExprTail(CondResult left);
 Token ParseStatement(Token token);
-Token ParseIdentifierStatement(Token token, TokenType terminator);
-Token ParseIdentifierStatementFrom(Token token, Token afterName, TokenType terminator);
+Token ParseIdentifierStatement(Token token, LexerTokenType terminator);
+Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType terminator);
 StringResult ParseStringValue(Token token);
 StringResult ParseInputExpr(Token token, Token afterInput);
 StringResult ParseStringIdentifier(Token token, Token afterName);
@@ -411,7 +413,7 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext);
 BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken);
 ExprResult ParseLenCall(Token nameToken);
 Token ParseConversionCall(char* keyword, int builtinId, Token keywordToken);
-Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, TokenType terminator);
+Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, LexerTokenType terminator);
 StringResult ParseFormatCall(Token formatToken);
 Token ParseScanInputStatement(Token fmtToken);
 char* ExtractSpecifiers(char* fmtText, int* outCount);
@@ -964,7 +966,7 @@ ExprResult ParseNumericFactor(Token token) {
 // still pick up any operators that follow it.
 ExprResult ParseNumericTermTail(ExprResult left) {
   while(left.next.type == TOKEN_OP_MUL || left.next.type == TOKEN_OP_DIV) {
-    TokenType op = left.next.type;
+    LexerTokenType op = left.next.type;
     int opLine = left.next.line;
     
     ExprResult right = ParseNumericFactor(LexerNext());
@@ -1000,7 +1002,7 @@ ExprResult ParseNumericTerm(Token token) {
 // ParseNumericTermTail above.
 ExprResult ParseNumericExpressionTail(ExprResult left) {
   while(left.next.type == TOKEN_OP_ADD || left.next.type == TOKEN_OP_SUB) {
-    TokenType op = left.next.type;
+    LexerTokenType op = left.next.type;
     
     ExprResult right = ParseNumericTerm(LexerNext());
     
@@ -1370,7 +1372,7 @@ CondResult ParseConditionOperand(Token token) {
 // tell a string result apart from everything else) can still pick up a
 // trailing comparison.
 CondResult ParseComparisonTail(CondResult left, int leftStart, int leftEnd) {
-  TokenType op = left.next.type;
+  LexerTokenType op = left.next.type;
   
   if(op == TOKEN_OP_GT || op == TOKEN_OP_LT || op == TOKEN_OP_EQ ||
      op == TOKEN_OP_GE || op == TOKEN_OP_LE || op == TOKEN_OP_NE) {
@@ -1807,7 +1809,7 @@ Token ParseConversionCall(char* keyword, int builtinId, Token keywordToken) {
 // 'terminator' is the token type that ends the argument list -- ')' for
 // format(...), ';' for the print/input sugar. Returns the token right after
 // the terminator.
-Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, TokenType terminator) {
+Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, LexerTokenType terminator) {
   // Specifier list known at compile time, only when the format string is a
   // literal written right here -- NULL means "not known, check at runtime".
   char* knownSpecifiers = NULL;
@@ -2268,7 +2270,7 @@ CondResult ParseGeneralStringComparison(Token token) {
     CompileError(afterLhs.line, "Strings can only be compared with == or !=");
   }
   
-  TokenType op = afterLhs.type;
+  LexerTokenType op = afterLhs.type;
   int opLine = afterLhs.line;
   
   Token rhsToken = LexerNext();
@@ -2324,7 +2326,7 @@ CondResult ParseComparison(Token token) {
         CompileError(token.line, "String variable '%s' can only be compared with == or !=", token.value);
       }
       
-      TokenType op = afterIndex.type;
+      LexerTokenType op = afterIndex.type;
       int opLine = afterIndex.line;
       
       Token rhs = LexerNext();
@@ -3254,7 +3256,7 @@ Token ParseVarDeclaration() {
 // Check that 'token' matches the expected statement terminator (';' for a
 // normal statement, ')' for a for-loop's increment clause), stopping the
 // program with a clear error if not.
-void ExpectTerminator(Token token, TokenType terminator) {
+void ExpectTerminator(Token token, LexerTokenType terminator) {
   if(token.type != terminator) {
     CompileError(token.line, terminator == TOKEN_RPAREN ? "Expected )" : "Expected ;");
   }
@@ -3265,7 +3267,7 @@ void ExpectTerminator(Token token, TokenType terminator) {
 // scalar variable or one array element. 'terminator' is the token that ends
 // the statement: ';' for a normal statement, or ')' when this is used as a
 // for-loop's increment clause.
-Token ParseIdentifierStatement(Token token, TokenType terminator) {
+Token ParseIdentifierStatement(Token token, LexerTokenType terminator) {
   return ParseIdentifierStatementFrom(token, LexerNext(), terminator);
 }
 
@@ -3273,7 +3275,7 @@ Token ParseIdentifierStatement(Token token, TokenType terminator) {
 // token instead of reading it itself -- used by the sscanf()/split()
 // dispatch in ParseStatement, which needs that same one token of lookahead
 // to tell those two apart from an ordinary identifier statement first.
-Token ParseIdentifierStatementFrom(Token token, Token afterName, TokenType terminator) {
+Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType terminator) {
   if(afterName.type == TOKEN_LPAREN) {
     if(strcmp(token.value, "len") == 0 || FindBuiltin(token.value) != -1) {
       Token next;
@@ -4571,6 +4573,216 @@ Token ParseReturnStatement(Token returnToken) {
   return LexerNext();
 }
 
+// Open a source file for module / library and register it. Returns its file id
+// and puts its text in 'text', or returns -1 if the file was already included
+// before: every file is only included once, which also stops files that
+// include each other from looping forever.
+int PrepareInclude(int line, char* openPath, char* displayName, char** text) {
+  if(FindSourceFile(openPath) != -1) {
+    return -1;
+  }
+  
+  *text = ReadFileText(openPath);
+  
+  if(*text == NULL) {
+    CompileError(line, "Cannot open file \"%s\"", displayName);
+  }
+  
+  if(!SourceTextFits(*text)) {
+    CompileError(line, "File \"%s\" has too many lines", displayName);
+  }
+  
+  int fileId = AddSourceFile(openPath, displayName);
+  
+  if(fileId == -1) {
+    CompileError(line, "Too many source files (the limit is %d)", MAX_SOURCE_FILES);
+  }
+  
+  return fileId;
+}
+
+// Read the string and the ';' that follow module / library, and make sure the
+// statement is not inside a function or a block. Returns the string token.
+Token ParseIncludeArgument(Token keywordToken, char* keyword) {
+  if(insideFunctionBody || scopeDepth > 0) {
+    CompileError(keywordToken.line, "'%s' can only be used at the top level, not inside a function or a block", keyword);
+  }
+  
+  Token argument = LexerNext();
+  
+  if(argument.type != TOKEN_LIT_STRING) {
+    CompileError(argument.line, "Expected string after '%s'", keyword);
+  }
+  
+  Token semicolon = LexerNext();
+  
+  if(semicolon.type != TOKEN_SEMICOLON) {
+    CompileError(semicolon.line, "Expected ;");
+  }
+  
+  return argument;
+}
+
+// Parse: module "file.ell";
+// The file's code is placed right here, as if it was written in this spot.
+// A relative path is relative to the file that has the module statement.
+Token ParseModuleStatement(Token moduleToken) {
+  Token pathToken = ParseIncludeArgument(moduleToken, "module");
+  
+  char* path = pathToken.value;
+  
+  // Locate the file next to the file that includes it
+  int parentId = LocationFileId(moduleToken.line);
+  
+  char* openPath = path;
+  char* displayName = path;
+  
+  if(!IsAbsolutePath(path)) {
+    char* openDirectory = DirectoryOfPath(SourceOpenPath(parentId));
+    char* displayDirectory = DirectoryOfPath(SourceDisplayName(parentId));
+    
+    char* joinedDisplay = JoinPath(displayDirectory, path);
+    
+    openPath = JoinPath(openDirectory, path);
+    displayName = NormalizePath(joinedDisplay);
+    
+    free(joinedDisplay);
+    free(openDirectory);
+    free(displayDirectory);
+  }
+  
+  char* text = NULL;
+  int fileId = PrepareInclude(moduleToken.line, openPath, displayName, &text);
+  
+  if(fileId != -1) {
+    LexerPushSource(text, fileId);
+  }
+  
+  if(openPath != path) {
+    free(openPath);
+    free(displayName);
+  }
+  
+  free(path);
+  
+  return LexerNext();
+}
+
+// Check that an optional field of library.json is a string
+void CheckLibraryTextField(int line, char* libraryName, JsonValue* root, char* field) {
+  JsonValue* value = JsonGet(root, field);
+  
+  if(value != NULL && value->type != JSON_STRING) {
+    CompileError(line, "In library.json of library \"%s\": \"%s\" must be a string", libraryName, field);
+  }
+}
+
+// Parse: library "name";
+// Finds the folder "library/name" next to the elvm executable, reads its
+// library.json, and places the code of every file listed in "files" right
+// here, in the order they are listed.
+Token ParseLibraryStatement(Token libraryToken) {
+  Token nameToken = ParseIncludeArgument(libraryToken, "library");
+  
+  char* name = nameToken.value;
+  int line = nameToken.line;
+  
+  // The name becomes a folder name, so it must not lead anywhere else
+  if(!IsValidLibraryName(name)) {
+    CompileError(line, "Invalid library name \"%s\" (use only letters, digits, _ - and .)", name);
+  }
+  
+  char* libraryDirectory = GetLibraryDirectory(name);
+  char* jsonPath = JoinPath(libraryDirectory, "library.json");
+  char* jsonText = ReadFileText(jsonPath);
+  
+  if(jsonText == NULL) {
+    CompileError(line, "Library \"%s\" not found (expected %s)", name, jsonPath);
+  }
+  
+  char error[256];
+  JsonValue* root = JsonParse(jsonText, error, sizeof(error));
+  
+  free(jsonText);
+  
+  if(root == NULL) {
+    CompileError(line, "Invalid library.json in library \"%s\" (%s)", name, error);
+  }
+  
+  if(root->type != JSON_OBJECT) {
+    CompileError(line, "In library.json of library \"%s\": expected a JSON object", name);
+  }
+  
+  // Only "name" and "files" are needed, the rest is information about the library
+  JsonValue* libraryName = JsonGet(root, "name");
+  
+  if(libraryName == NULL || libraryName->type != JSON_STRING) {
+    CompileError(line, "In library.json of library \"%s\": missing \"name\" (a string)", name);
+  }
+  
+  CheckLibraryTextField(line, name, root, "description");
+  CheckLibraryTextField(line, name, root, "version");
+  CheckLibraryTextField(line, name, root, "author");
+  
+  JsonValue* files = JsonGet(root, "files");
+  
+  if(files == NULL || files->type != JSON_ARRAY || files->count == 0) {
+    CompileError(line, "In library.json of library \"%s\": \"files\" must be a list with at least one file", name);
+  }
+  
+  char** texts = malloc(files->count * sizeof(char*));
+  int* fileIds = malloc(files->count * sizeof(int));
+  int loaded = 0;
+  
+  for(int i = 0; i < files->count; i++) {
+    JsonValue* file = files->items[i];
+    
+    if(file->type != JSON_STRING) {
+      CompileError(line, "In library.json of library \"%s\": every item of \"files\" must be a string", name);
+    }
+    
+    // A library can only use files from inside its own folder
+    if(!IsSafeRelativePath(file->string)) {
+      CompileError(line, "In library.json of library \"%s\": file \"%s\" must be inside the library folder", name, file->string);
+    }
+    
+    char* openPath = JoinPath(libraryDirectory, file->string);
+    
+    char* displayBase = malloc(strlen("library/") + strlen(name) + 1);
+    
+    sprintf(displayBase, "library/%s", name);
+    
+    char* displayName = JoinPath(displayBase, file->string);
+    
+    int fileId = PrepareInclude(line, openPath, displayName, &texts[loaded]);
+    
+    if(fileId != -1) {
+      fileIds[loaded] = fileId;
+      loaded++;
+    }
+    
+    free(openPath);
+    free(displayBase);
+    free(displayName);
+  }
+  
+  // Files are read from the top of a stack, so the first file is added last
+  for(int i = loaded - 1; i >= 0; i--) {
+    LexerPushSource(texts[i], fileIds[i]);
+  }
+  
+  free(texts);
+  free(fileIds);
+  free(libraryDirectory);
+  free(jsonPath);
+  
+  JsonFree(root);
+  
+  free(name);
+  
+  return LexerNext();
+}
+
 // Parse one full statement, returning the lookahead token that follows it
 Token ParseStatement(Token token) {
   if(token.type == TOKEN_ERROR) {
@@ -4681,6 +4893,14 @@ Token ParseStatement(Token token) {
     EmitInstruction(discard);
     
     return LexerNext();
+  }
+  
+  if(token.type == TOKEN_KW_MODULE) {
+    return ParseModuleStatement(token);
+  }
+  
+  if(token.type == TOKEN_KW_LIBRARY) {
+    return ParseLibraryStatement(token);
   }
   
   if(token.type == TOKEN_KW_IF) {
