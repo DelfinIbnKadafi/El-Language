@@ -32,6 +32,27 @@ library/
 
 For `library "mathx";`, ELVM reads `library/mathx/library.json`, then copies the content of every file listed in its `files` into your program, just like [Module](content/modules/module.md) does. To make your own, see [Creating a Library](content/modules/creating-a-library.md).
 
+## Library Manager
+
+El Language has library manager call with ellib. Usually, ellib is including in linux/windows setup, or download the latest version in https://github.com/DelfinIbnKadafi/El-Library
+
+
+### Install Library
+
+Install from official repository https://github.com/DelfinIbnKadafi/El-Library
+
+```bash
+ellib install <lib_name>
+```
+
+Install from another github repository
+
+```
+ellib install <username>/<repos_name>
+```
+
+For another information, go to https://github.com/DelfinIbnKadafi/El-Library
+
 ## Behavior
 
 - Files are copied in the order they are listed in `library.json`.
