@@ -4746,6 +4746,14 @@ Token ParseLibraryStatement(Token libraryToken) {
       CompileError(line, "In library.json of library \"%s\": file \"%s\" must be inside the library folder", name, file->string);
     }
     
+    // Both separators are accepted, so a library written on Windows also works
+    // on systems where '\\' is not a separator
+    for(char* c = file->string; *c != '\0'; c++) {
+      if(*c == '\\') {
+        *c = '/';
+      }
+    }
+    
     char* openPath = JoinPath(libraryDirectory, file->string);
     
     char* displayBase = malloc(strlen("library/") + strlen(name) + 1);

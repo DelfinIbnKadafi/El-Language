@@ -41,7 +41,7 @@ The folder name (`greeter`) is the name used in the program: `library "greeter";
 ## Rules for files
 
 - Files are copied into the program in the listed order. Put a file before the files that use its functions and variables.
-- Paths are relative to the library folder, and may use sub-folders written with `/`.
+- Paths are relative to the library folder, and may use sub-folders written with `/` (a `\` is accepted too and read as `/`, so a library written on Windows also works on Linux).
 - A path cannot be absolute and cannot contain `..`. A library can only use files from inside its own folder.
 - A listed file can use [`module`](content/modules/module.md) to include more files, with the path relative to that file.
 

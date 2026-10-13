@@ -1,5 +1,5 @@
 #define AppName "ELVM"
-#define AppVersion "1.0.0"
+#define AppVersion "0.8.1"
 
 [Setup]
 AppId={{A81C25B7-9F41-4C75-B90E-2A0F6B12A001}
@@ -16,11 +16,17 @@ SolidCompression=yes
 WizardStyle=modern
 
 [Dirs]
-Name: "{app}\library"
+; Program Files can only be changed by administrators. The library folder is where
+; "ellib install" creates folders, so every user must be allowed to modify it.
+Name: "{app}\library"; Permissions: users-modify
 
 [Files]
 Source: "elvm.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "ellib.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[UninstallDelete]
+; Remove the libraries installed with ellib, Inno only removes folders it created itself
+Type: filesandordirs; Name: "{app}\library"
 
 [Registry]
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; Check: NeedsAddPath(ExpandConstant('{app}')); Flags: preservestringtype
