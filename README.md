@@ -126,7 +126,55 @@ Open https://el-lang.my.id/ for complete documentation of El Language.
 
 ## Installations
 
-Open release tab and download the elvm that you want to download.
+### Windows
+
+Open release tab, select the latest or older version, download Windows setup or raw elvm exe file (It is recommended to download the windows setup).
+
+Run the windows setup, and agree all of terms of service.
+
+Run in PowerShell or another terminal with :
+
+```shell
+elvm file_name.ell
+```
+
+```shell
+path_into_elvm.exe file_name.ell
+```
+
+If you download the windows setup, you also get ellib (El Library Manager).
+
+Run it with :
+
+```bash
+ellib
+```
+
+### Linux
+
+Open release tab, select the latest or older version, download linux setup or raw elvm binary file (It is recommended to download the linux setup).
+
+Give permissions to linux setup with :
+
+```bash
+chmod +x linux-setup.sh
+```
+
+And then run the installer/setup with :
+
+```bash
+./linux-setup.sh
+```
+
+And run the elvm or ellib with same method with windows :
+
+```bash
+elvm file_name.ell
+```
+
+```bash
+ellib
+```
 
 ## License
 
