@@ -48,14 +48,16 @@ ellib install <lib_name>
 Install from another github repository
 
 ```
-ellib install <username>/<repos_name>
+ellib install -g <username>/<repos_name>
 ```
+
+If the library has [plugins](content/modules/plugins.md), ellib shows them and asks for confirmation first, because a plugin is native code. Add `-y` to skip the question.
 
 For another information, go to https://github.com/DelfinIbnKadafi/El-Library
 
 ## Behavior
 
-- Files are copied in the order they are listed in `library.json`.
+- If the library has [plugins](content/modules/plugins.md), they are loaded first, then the files are copied in the order they are listed in `library.json`.
 - `library` can only be used at the top level of a file, not inside a function or a block.
 - A `library` statement must come before the code that uses the library, because EL compiles top-to-bottom.
 - A library is loaded only once, repeating `library "mathx";` does nothing.
@@ -80,11 +82,13 @@ library/mathx/core.ell (4) : Division by zero
 | `Invalid library.json in library "x" (line N: ...)` | `library.json` is not valid JSON. |
 | `In library.json of library "x": ...` | A required field is missing or has the wrong type, or a file path is not allowed. |
 | `Cannot open file "library/x/file.ell"` | A file listed in `files` does not exist. |
+| `Cannot load plugin "x" (...)`, `Plugin "x" not found (...)` | A plugin of the library is missing or cannot be loaded. See [Plugins](content/modules/plugins.md). |
 | `Expected string after 'library'` | The name was not written as a string, e.g. `library mathx;`. |
 | `'library' can only be used at the top level, not inside a function or a block` | `library` was used inside a function or a block. |
 
 ## Related
 
 - [Creating a Library](content/modules/creating-a-library.md)
+- [Plugins](content/modules/plugins.md)
 - [Module](content/modules/module.md)
 - [Installation](content/getting-started/installation.md)

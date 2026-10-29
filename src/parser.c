@@ -9,6 +9,7 @@
 #include "parser.h"
 #include "source.h"
 #include "json.h"
+#include "plugin.h"
 
 // Initial bytecode capacity
 #define INITIAL_BYTECODE_CAP 256
@@ -167,6 +168,12 @@ typedef struct {
   // of its definition, and rejected only if that optimism turned out wrong.
   int hadTentativeSelfCall;
   int tentativeSelfCallLine;
+  
+  // True for a native function added by a plugin: it has no body in the
+  // bytecode, a call runs OP_CALL_NATIVE for plugin native 'nativeIndex'
+  // instead of jumping to bodyStart.
+  int isNative;
+  int nativeIndex;
 } FunctionSymbol;
 
 // Function table storage. Grows as needed -- see DeclareFunction -- so
@@ -649,6 +656,17 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
 FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
   FunctionSymbol* func = &functionSymbols[funcIndex];
   
+  // A plugin native collects its arguments the way a built-in function does:
+  // OP_FORMAT_ARG_BEGIN, then one OP_FORMAT_ARG after each argument.
+  if(func->isNative) {
+    Instruction begin = {0};
+    
+    begin.opcode = OP_FORMAT_ARG_BEGIN;
+    begin.line = nameToken.line;
+    
+    EmitInstruction(begin);
+  }
+  
   Token token = LexerNext();
   int argIndex = 0;
   
@@ -659,6 +677,7 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
       }
       
       VarType paramType = func->paramTypes[argIndex];
+      int valueStart = bytecodeCount;
       
       if(func->paramIsArray[argIndex]) {
         token = ParseArrayArgument(func, argIndex, nameToken, token);
@@ -696,6 +715,23 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
         token = value.next;
       }
       
+      if(func->isNative) {
+        int valueEnd = bytecodeCount;
+        int isBare = paramType != VAR_STR && valueEnd > valueStart &&
+          (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
+           bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+           bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+        
+        Instruction argInstr = {0};
+        
+        argInstr.opcode = OP_FORMAT_ARG;
+        argInstr.valueType = paramType;
+        argInstr.propagateNone = isBare;
+        argInstr.line = nameToken.line;
+        
+        EmitInstruction(argInstr);
+      }
+      
       argIndex++;
       
       if(token.type == TOKEN_COMMA) {
@@ -717,8 +753,14 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
   
   Instruction call = {0};
   
-  call.opcode = OP_CALL;
-  call.jumpTarget = func->bodyStart;
+  if(func->isNative) {
+    call.opcode = OP_CALL_NATIVE;
+    call.nativeIndex = func->nativeIndex;
+  } else {
+    call.opcode = OP_CALL;
+    call.jumpTarget = func->bodyStart;
+  }
+  
   call.line = nameToken.line;
   
   EmitInstruction(call);
@@ -1566,7 +1608,8 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
   int valueEnd = bytecodeCount;
   int isBare = type != VAR_STR && valueEnd > valueStart &&
     (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
   
   Instruction argInstr = {0};
   
@@ -1638,7 +1681,8 @@ BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken) {
       int valueEnd = bytecodeCount;
       int isBare = argType != VAR_STR && valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-         bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+         bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
       
       Instruction argInstr = {0};
       
@@ -3168,7 +3212,8 @@ Token ParseVarDeclaration() {
         
         propagateNone = valueEnd > valueStart &&
           (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-           bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+           bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
         nextAfter = value.next;
       }
     } else {
@@ -3220,7 +3265,8 @@ Token ParseVarDeclaration() {
       
       propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
       
       nextAfter = exprResult.next;
     }
@@ -3530,7 +3576,8 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
       storeNoneFlag = 0;
       isBareCopy = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-         bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+         bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
       nextTok = value.next;
     }
     
@@ -3576,7 +3623,8 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
       
       int propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
       
       Instruction instruction = {0};
       
@@ -3898,7 +3946,8 @@ Token ParsePrintStatement() {
     
     int isBare = valueEnd > valueStart &&
       (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
-     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN);
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
     
     Instruction instruction = {0};
     
@@ -4677,6 +4726,145 @@ void CheckLibraryTextField(int line, char* libraryName, JsonValue* root, char* f
   }
 }
 
+// True if 'name' is a word the language already uses (a keyword, or the name
+// of a built-in function), so a plugin cannot take it
+int IsReservedFunctionName(char* name) {
+  static char* words[] = {
+    "NONE", "and", "bool", "else", "exit", "false", "float", "for", "format",
+    "function", "if", "input", "int", "library", "module", "not", "or",
+    "print", "return", "str", "true", "var", "while", "sscanf", "split"
+  };
+  
+  for(int i = 0; i < (int) (sizeof(words) / sizeof(words[0])); i++) {
+    if(strcmp(words[i], name) == 0) {
+      return 1;
+    }
+  }
+  
+  return FindBuiltin(name) != -1;
+}
+
+// Add the natives a plugin has just registered (the ones from 'first' up to
+// PluginNativeCount()) to the function table, so EL code can call them like
+// any other function.
+void DeclarePluginNatives(int line, int first) {
+  for(int i = first; i < PluginNativeCount(); i++) {
+    const PluginNative* native = PluginNativeAt(i);
+    
+    if(IsReservedFunctionName(native->name)) {
+      CompileError(line, "Plugin \"%s\" cannot add function '%s': that name is reserved by EL",
+        PluginDisplayName(native->pluginIndex), native->name);
+    }
+    
+    if(FindFunction(native->name) != -1) {
+      CompileError(line, "Plugin \"%s\" cannot add function '%s': a function with that name is already declared",
+        PluginDisplayName(native->pluginIndex), native->name);
+    }
+    
+    if(functionSymbolCount >= functionSymbolCapacity) {
+      functionSymbolCapacity = functionSymbolCapacity == 0 ? 16 : functionSymbolCapacity * 2;
+      functionSymbols = realloc(functionSymbols, functionSymbolCapacity * sizeof(FunctionSymbol));
+    }
+    
+    FunctionSymbol* func = &functionSymbols[functionSymbolCount++];
+    
+    memset(func, 0, sizeof(FunctionSymbol));
+    strncpy(func->name, native->name, TOKEN_MAX_LEN - 1);
+    func->name[TOKEN_MAX_LEN - 1] = '\0';
+    
+    int slots = native->paramCount > 0 ? native->paramCount : 1;
+    
+    func->paramCount = native->paramCount;
+    func->paramCapacity = slots;
+    func->paramTypes = calloc(slots, sizeof(VarType));
+    func->paramVarIndex = calloc(slots, sizeof(int));
+    func->paramStrSize = calloc(slots, sizeof(int));
+    func->paramIsArray = calloc(slots, sizeof(int));
+    func->paramArraySize = calloc(slots, sizeof(int));
+    
+    for(int p = 0; p < native->paramCount; p++) {
+      func->paramTypes[p] = native->paramTypes[p];
+    }
+    
+    func->hasReturnValue = native->hasReturn;
+    func->returnType = native->returnType;
+    
+    func->isNative = 1;
+    func->nativeIndex = i;
+  }
+}
+
+// Load the plugins listed in the "plugins" field of a library.json. An entry
+// for another system (like a ".dll" on Linux) is skipped, so one library can
+// list the plugin of every system it supports.
+void LoadLibraryPlugins(int line, char* name, char* libraryDirectory, JsonValue* pluginList) {
+  int forThisSystem = 0;
+  
+  for(int i = 0; i < pluginList->count; i++) {
+    JsonValue* entry = pluginList->items[i];
+    
+    if(entry->type != JSON_STRING) {
+      CompileError(line, "In library.json of library \"%s\": every item of \"plugins\" must be a string", name);
+    }
+    
+    if(!IsSafeRelativePath(entry->string)) {
+      CompileError(line, "In library.json of library \"%s\": plugin \"%s\" must be inside the library folder", name, entry->string);
+    }
+    
+    for(char* c = entry->string; *c != '\0'; c++) {
+      if(*c == '\\') {
+        *c = '/';
+      }
+    }
+    
+    char* fileName = NULL;
+    
+    if(!PluginResolveFileName(entry->string, &fileName)) {
+      continue;
+    }
+    
+    forThisSystem++;
+    
+    char* openPath = JoinPath(libraryDirectory, fileName);
+    
+    char* displayBase = malloc(strlen("library/") + strlen(name) + 1);
+    
+    sprintf(displayBase, "library/%s", name);
+    
+    char* displayName = JoinPath(displayBase, fileName);
+    
+    FILE* probe = fopen(openPath, "rb");
+    
+    if(probe == NULL) {
+      CompileError(line, "Plugin \"%s\" not found (expected %s)", displayName, openPath);
+    }
+    
+    fclose(probe);
+    
+    int first = 0;
+    char error[512];
+    
+    int status = PluginLoad(openPath, displayName, &first, error, sizeof(error));
+    
+    if(status == PLUGIN_FAILED) {
+      CompileError(line, "%s", error);
+    }
+    
+    if(status == PLUGIN_LOADED) {
+      DeclarePluginNatives(line, first);
+    }
+    
+    free(fileName);
+    free(openPath);
+    free(displayBase);
+    free(displayName);
+  }
+  
+  if(forThisSystem == 0) {
+    CompileError(line, "Library \"%s\" has no plugin for this system (\"plugins\" needs a \"%s\" file)", name, PluginPlatformExtension());
+  }
+}
+
 // Parse: library "name";
 // Finds the folder "library/name" next to the elvm executable, reads its
 // library.json, and places the code of every file listed in "files" right
@@ -4725,16 +4913,38 @@ Token ParseLibraryStatement(Token libraryToken) {
   CheckLibraryTextField(line, name, root, "author");
   
   JsonValue* files = JsonGet(root, "files");
+  JsonValue* pluginList = JsonGet(root, "plugins");
   
-  if(files == NULL || files->type != JSON_ARRAY || files->count == 0) {
+  if(pluginList != NULL && pluginList->type != JSON_ARRAY) {
+    CompileError(line, "In library.json of library \"%s\": \"plugins\" must be a list", name);
+  }
+  
+  int hasPlugins = pluginList != NULL && pluginList->count > 0;
+  int fileCount = 0;
+  
+  if(files != NULL) {
+    if(files->type != JSON_ARRAY) {
+      CompileError(line, "In library.json of library \"%s\": \"files\" must be a list with at least one file", name);
+    }
+    
+    fileCount = files->count;
+  }
+  
+  // A library needs at least one file, or a plugin (a library can be only a plugin)
+  if(fileCount == 0 && !hasPlugins) {
     CompileError(line, "In library.json of library \"%s\": \"files\" must be a list with at least one file", name);
   }
   
-  char** texts = malloc(files->count * sizeof(char*));
-  int* fileIds = malloc(files->count * sizeof(int));
+  // Plugins go first, so the files of the library can already call them
+  if(hasPlugins) {
+    LoadLibraryPlugins(line, name, libraryDirectory, pluginList);
+  }
+  
+  char** texts = malloc((fileCount > 0 ? fileCount : 1) * sizeof(char*));
+  int* fileIds = malloc((fileCount > 0 ? fileCount : 1) * sizeof(int));
   int loaded = 0;
   
-  for(int i = 0; i < files->count; i++) {
+  for(int i = 0; i < fileCount; i++) {
     JsonValue* file = files->items[i];
     
     if(file->type != JSON_STRING) {

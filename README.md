@@ -41,6 +41,7 @@ source.ell → [Lexer] → tokens → [Parser] → bytecode → [ELVM] → resul
 | **Lexer** | `lexer.c` / `lexer.h` | Turns source code into tokens (keywords, identifiers, literals, operators, etc). |
 | **Parser** | `parser.c` / `parser.h` | Parses syntax, checks types, resolves scope/variables, and compiles everything into bytecode. |
 | **ELVM** | `elvm.c` / `elvm.h` | A stack-based virtual machine that executes the bytecode — variable storage, the call stack (for recursion), and every runtime operation. |
+| **Plugins** | `plugin.c` / `plugin.h` / `elplugin.h` | Loads native plugins (`.dll` / `.so` / `.dylib`) listed in a library's `library.json` and registers their functions. |
 | **Entry point** | `main.c` | Wires the three together: reads the file, then runs lexer → parser → VM. |
 
 A couple of the more important design choices behind it:

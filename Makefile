@@ -5,6 +5,14 @@ CC = gcc
 CFLAGS = -Wall -Wextra -std=c99
 LDLIBS = -lm
 
+# Loading plugins needs the dynamic loader on Linux (it is part of the C
+# library on Windows and macOS)
+ifneq ($(OS),Windows_NT)
+ifneq ($(shell uname -s),Darwin)
+LDLIBS += -ldl
+endif
+endif
+
 SRC = src
 
 BUILD = compiler
@@ -21,7 +29,8 @@ FILES = \
   $(SRC)/lexer.c \
   $(SRC)/elvm.c \
   $(SRC)/source.c \
-  $(SRC)/json.c
+  $(SRC)/json.c \
+  $(SRC)/plugin.c
 
 
 .PHONY: all clean rebuild

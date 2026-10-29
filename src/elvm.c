@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include "elvm.h"
 #include "source.h"
+#include "plugin.h"
 
 // Sized generously since recursive functions can leave several pending
 // values on this stack per nesting level (e.g. 'return 1 + f(n - 1);' keeps
@@ -1793,6 +1794,59 @@ void VMRun(Instruction* code, int count, char* filename) {
         
         FreeFormatArgList(list);
         formatArgListTop--;
+        break;
+      }
+      case OP_CALL_NATIVE: {
+        FormatArgList* list = &formatArgListStack[formatArgListTop - 1];
+        const PluginNative* native = PluginNativeAt(instruction.nativeIndex);
+        
+        int argCount = list->count > 0 ? list->count : 1;
+        
+        VarType* argTypes = malloc(argCount * sizeof(VarType));
+        double* argNumbers = calloc(argCount, sizeof(double));
+        int* argIsNone = calloc(argCount, sizeof(int));
+        char** argStrings = calloc(argCount, sizeof(char*));
+        
+        for(int i = 0; i < list->count; i++) {
+          argTypes[i] = list->args[i].type;
+          argNumbers[i] = list->args[i].numberValue;
+          argIsNone[i] = list->args[i].isNone;
+          argStrings[i] = list->args[i].stringValue;
+        }
+        
+        PluginResult nativeResult;
+        char nativeError[512];
+        
+        if(!PluginCallNative(instruction.nativeIndex, argTypes, argNumbers, argIsNone, argStrings, &nativeResult, nativeError, sizeof(nativeError))) {
+          fflush(stdout);
+          printf("%s (%d) : %s\n", LocationFile(instruction.line), LocationLine(instruction.line), nativeError);
+          exit(1);
+        }
+        
+        free(argTypes);
+        free(argNumbers);
+        free(argIsNone);
+        free(argStrings);
+        
+        FreeFormatArgList(list);
+        formatArgListTop--;
+        
+        if(native->hasReturn) {
+          if(native->returnType == VAR_STR) {
+            if(stringValueStackTop >= MAX_STRING_STACK) {
+              printf("%s (%d) : Stack overflow: too many nested string arguments/returns\n", LocationFile(instruction.line), LocationLine(instruction.line));
+              exit(1);
+            }
+            
+            PushStringValue(nativeResult.string != NULL ? nativeResult.string : "");
+            stringValueStackIsNone[stringValueStackTop - 1] = nativeResult.isNone;
+          } else {
+            Push(nativeResult.isNone ? 0 : nativeResult.number);
+            lastPushedIsNone = nativeResult.isNone;
+          }
+        }
+        
+        free(nativeResult.string);
         break;
       }
       case OP_SCAN_STRING: {

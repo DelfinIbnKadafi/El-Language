@@ -185,6 +185,14 @@
     "Creating a Library": {
       "file_md": "content/modules/creating-a-library.md",
       "desc": "The library folder layout and the library.json file."
+    },
+    "Plugins": {
+      "file_md": "content/modules/plugins.md",
+      "desc": "Native plugins in a library: what they are and how a program uses them."
+    },
+    "Writing a Plugin": {
+      "file_md": "content/modules/writing-a-plugin.md",
+      "desc": "The C API for making a plugin that adds native functions to El."
     }
   },
   "Error Handling": {

@@ -17,6 +17,8 @@ filename (line) : message
 | `Division by zero` | An `int` or `float` division (`/`) had `0` as its divisor. |
 | `Array index N out of bounds (size S)` | An array was accessed at an index outside its declared size. |
 | `Stack overflow: too many nested/recursive function calls` | A function call chain (typically recursion) exceeded EL's maximum call depth, a safeguard against runaway/infinite recursion. |
+| `Plugin function 'f' returned N, which does not fit in an EL int (32 bit)` | A plugin function declared `:int` gave a number outside -2147483648 to 2147483647. |
+| Any other message from a plugin | A plugin function stopped the program on purpose (for example `mysql_query failed: ...`). The text is the plugin's own. See [Plugins](content/modules/plugins.md). |
 
 ## Examples
 

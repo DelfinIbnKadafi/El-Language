@@ -108,7 +108,13 @@ typedef enum {
   // split(source, var1, var2, ...) -- splits 'source' on whitespace into
   // var1, var2, ... (always strings), the same tokenizing OP_SCAN_STRING and
   // OP_SSCANF use, just with no format string of its own.
-  OP_SPLIT
+  OP_SPLIT,
+  
+  // Call a native function from a plugin (see plugin.h). Arguments are
+  // collected the same way OP_CALL_BUILTIN's are (OP_FORMAT_ARG_BEGIN, one
+  // OP_FORMAT_ARG per argument), 'nativeIndex' says which native to run, and
+  // its result (if it has one) is pushed like a user function's return value.
+  OP_CALL_NATIVE
 } Opcode;
 
 // Which native implementation OP_CALL_BUILTIN should run. len() only
@@ -283,6 +289,10 @@ typedef struct {
   // Which built-in function OP_CALL_BUILTIN should run -- see BuiltinId in
   // elvm.c.
   int builtinId;
+  
+  // Which plugin native OP_CALL_NATIVE should run -- an index into the
+  // registry in plugin.c.
+  int nativeIndex;
 } Instruction;
 
 // Execute bytecode

@@ -1,5 +1,5 @@
 #define AppName "ELVM"
-#define AppVersion "0.8.1"
+#define AppVersion "0.8.2"
 
 [Setup]
 AppId={{A81C25B7-9F41-4C75-B90E-2A0F6B12A001}

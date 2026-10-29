@@ -34,9 +34,20 @@ The folder name (`greeter`) is the name used in the program: `library "greeter";
 | `description` | No | What the library does. |
 | `version` | No | The version of the library. |
 | `author` | No | Who made the library. |
-| `files` | Yes | A list with at least one `.ell` file, written as paths inside the library folder. |
+| `files` | Yes, unless `plugins` is used | A list with at least one `.ell` file, written as paths inside the library folder. |
+| `plugins` | No | A list of native plugin files (`.dll`, `.so`, `.dylib`), written as paths inside the library folder. See [Plugins](content/modules/plugins.md). |
 
 `name`, `description`, `version` and `author` must be strings. Any other field is ignored, so it is safe to add more information.
+
+A library can also be only a plugin: with a `plugins` list, `files` can be left out.
+
+```json
+{
+  "name": "hashing",
+  "version": "1.0.0",
+  "plugins": ["hashing.dll", "hashing.so"]
+}
+```
 
 ## Rules for files
 
@@ -77,4 +88,5 @@ https://github.com/DelfinIbnKadafi/EL-Library
 ## Related
 
 - [Library](content/modules/library.md)
+- [Plugins](content/modules/plugins.md)
 - [Module](content/modules/module.md)

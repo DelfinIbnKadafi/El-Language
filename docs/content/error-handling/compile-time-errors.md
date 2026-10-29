@@ -26,6 +26,11 @@ filename (line) : message
 | `Expected ;` | A statement is missing its terminating semicolon. |
 | `Cannot open file "x.ell"` | The file given to `module` (or listed in a library) does not exist. See [Module](content/modules/module.md). |
 | `Library "x" not found (expected <path>)` | `library "x";` found no library with that name next to the `elvm` executable. See [Library](content/modules/library.md). |
+| `Cannot load plugin "x" (reason)` | The operating system could not load the plugin file (wrong system or CPU type, or a file it needs is missing). See [Plugins](content/modules/plugins.md). |
+| `Plugin "x" not found (expected <path>)` | A file listed in `plugins` does not exist. |
+| `Library "x" has no plugin for this system` | `plugins` has no file for the system the program runs on. |
+| `"x" is not an EL plugin` | The file loaded, but it does not export `elp_Supports` and `elp_Load`. |
+| `Plugin "x" cannot add function 'f': ...` | A plugin function has the same name as a function already declared, or a name EL reserves. |
 | `'module' can only be used at the top level, not inside a function or a block` | `module` (or `library`) was used inside a function or a block. |
 
 ## Example
