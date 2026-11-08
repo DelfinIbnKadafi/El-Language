@@ -337,6 +337,13 @@ Token LexerReadToken() {
     token.type = TOKEN_TYPE_BOOL;
     return token;
   }
+  // Read dict keyword
+  if(strncmp(&source[position], "dict", 4) == 0 && !IsWordChar(source[position + 4])) {
+    position += 4;
+    
+    token.type = TOKEN_TYPE_DICT;
+    return token;
+  }
   
   
   // literal
@@ -586,6 +593,13 @@ Token LexerReadToken() {
     position++;
     
     token.type = TOKEN_COMMA;
+    return token;
+  }
+  // Read colon (between a key and its value in a dictionary literal)
+  if(source[position] == ':') {
+    position++;
+    
+    token.type = TOKEN_COLON;
     return token;
   }
   

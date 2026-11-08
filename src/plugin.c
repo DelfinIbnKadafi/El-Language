@@ -21,7 +21,7 @@
 #endif
 
 // Size of the buffer for error text coming from a plugin
-#define PLUGIN_ERROR_SIZE 512
+#define PLUGIN_ERROR_SIZE 1024
 
 typedef int (*SupportsFunction)(void);
 typedef int (*LoadFunction)(const ELApi* api);

@@ -201,13 +201,14 @@ int FindFunction(char* name) {
 // be. ARG_NUMERIC is int or float only (bool is not accepted, matching how
 // %d/%f work in format()); ARG_STR is a plain string; ARG_ANY accepts
 // str/int/float/bool (only int()/float()/str() use this); ARG_INT_STRICT
-// rejects a float value outright (only random() uses this).
-typedef enum { ARG_NUMERIC, ARG_STR, ARG_ANY, ARG_INT_STRICT } BuiltinArgKind;
+// rejects a float value outright (only random() uses this); ARG_DICT is a
+// whole dictionary variable (only the dictionary functions use this).
+typedef enum { ARG_NUMERIC, ARG_STR, ARG_ANY, ARG_INT_STRICT, ARG_DICT } BuiltinArgKind;
 
 // What a builtin function returns. RET_WIDEN means "int if every argument
 // was int, float if any argument was float" -- the same widening rule the
 // language's own +/-/* operators already use (see abs()/min()/max()).
-typedef enum { RET_INT, RET_FLOAT, RET_STR, RET_WIDEN } BuiltinReturnKind;
+typedef enum { RET_INT, RET_FLOAT, RET_STR, RET_WIDEN, RET_BOOL } BuiltinReturnKind;
 
 typedef struct {
   char* name;
@@ -235,7 +236,10 @@ BuiltinDef builtinTable[] = {
   {"upper",  1, {ARG_STR, ARG_STR},         RET_STR,   BUILTIN_UPPER},
   {"lower",  1, {ARG_STR, ARG_STR},         RET_STR,   BUILTIN_LOWER},
   {"trim",   1, {ARG_STR, ARG_STR},         RET_STR,   BUILTIN_TRIM},
-  {"random", 2, {ARG_INT_STRICT, ARG_INT_STRICT}, RET_INT, BUILTIN_RANDOM}
+  {"random", 2, {ARG_INT_STRICT, ARG_INT_STRICT}, RET_INT, BUILTIN_RANDOM},
+  {"has_key",    2, {ARG_DICT, ARG_STR},        RET_BOOL,  BUILTIN_HAS_KEY},
+  {"remove_key", 2, {ARG_DICT, ARG_STR},        RET_BOOL,  BUILTIN_REMOVE_KEY},
+  {"key_at",     2, {ARG_DICT, ARG_INT_STRICT}, RET_STR,   BUILTIN_KEY_AT}
 };
 
 #define BUILTIN_COUNT (int) (sizeof(builtinTable) / sizeof(builtinTable[0]))
@@ -333,6 +337,13 @@ typedef struct {
   Token next;
   
   VarType type;
+  
+  // True if the whole expression is one dictionary entry read as a number,
+  // like dict["age"]. Its static type is float (it can hold an int or a
+  // float), but a spot that needs an int (an int variable, an array index)
+  // can still take it with a check when the program runs -- see
+  // AdaptDictReadToInt.
+  int dictBare;
 } ExprResult;
 
 // Result of parsing a string value: lookahead token, literal text, and source variable
@@ -404,6 +415,7 @@ CondResult ParseComparisonTail(CondResult left, int leftStart, int leftEnd);
 void EmitPushStringValue(StringResult value, int line);
 int LooksLikeGeneralStringValue(Token token);
 CondResult ParseGeneralStringComparison(Token token);
+CondResult ParseDictComparison(Token token);
 CondResult ParseAndExprTail(CondResult left);
 CondResult ParseOrExprTail(CondResult left);
 Token ParseStatement(Token token);
@@ -429,6 +441,136 @@ Token ParseScanDestinationList(char* label, char* specifiers, int specifierCount
 Token ParseSscanfStatement(Token nameToken);
 Token ParseSplitStatement(Token nameToken);
 
+// If 'value' is one dictionary entry read as a number (dict["age"]), turn the
+// read into one that has to find a whole number, and make 'value' an int.
+// Returns 1 if that was done. This is what lets "var int a = dict["age"];"
+// work although the compiler does not know the entry's type: the program
+// checks it when it runs.
+int AdaptDictReadToInt(ExprResult* value) {
+  if(value->dictBare && value->type == VAR_FLOAT && bytecodeCount > 0 &&
+     bytecode[bytecodeCount - 1].opcode == OP_DICT_GET_NUM) {
+    bytecode[bytecodeCount - 1].valueType = VAR_INT;
+    
+    value->type = VAR_INT;
+    value->dictBare = 0;
+    
+    return 1;
+  }
+  
+  return 0;
+}
+
+// A reference to a dictionary, or to one entry of it: name, then (for an
+// array of dictionaries) the element index, then optionally ["key"].
+typedef struct {
+  // Symbol of the dictionary variable
+  int symIndex;
+  
+  // True if a key followed, as in dict["key"], false for the whole dictionary
+  int hasKey;
+  
+  // The key when it was written as a string literal. Otherwise NULL and
+  // keyFromStack is set: the key is an expression, already evaluated onto
+  // the string-value stack.
+  char* keyLiteral;
+  int keyFromStack;
+  
+  // Lookahead token after the reference
+  Token next;
+} DictAccess;
+
+// Parse a reference to the dictionary variable 'nameToken' ('afterName' is
+// the token already read after it). Emits the code for the element index and
+// the key, leaving them on the numeric and string-value stacks for the
+// dictionary instruction that the caller emits next (see MakeDictInstruction).
+DictAccess ParseDictAccess(Token nameToken, Token afterName) {
+  DictAccess access = {0};
+  int index = FindSymbol(nameToken.value);
+  Token token = afterName;
+  
+  access.symIndex = index;
+  
+  if(symbols[index].isArray) {
+    if(token.type != TOKEN_LBRACKET) {
+      CompileError(nameToken.line, "Variable '%s' is an array of dictionaries and must be indexed", nameToken.value);
+    }
+    
+    Token firstToken = LexerNext();
+    
+    if(firstToken.type == TOKEN_LIT_STRING) {
+      CompileError(firstToken.line, "'%s' is an array of dictionaries: write the element number first, like %s[0][\"key\"]", nameToken.value, nameToken.value);
+    }
+    
+    ExprResult element = ParseNumericExpression(firstToken);
+    
+    AdaptDictReadToInt(&element);
+    
+    if(element.type != VAR_INT) {
+      CompileError(nameToken.line, "Array index must be an int");
+    }
+    
+    if(element.next.type != TOKEN_RBRACKET) {
+      CompileError(element.next.line, "Expected ]");
+    }
+    
+    token = LexerNext();
+  }
+  
+  if(token.type == TOKEN_LBRACKET) {
+    Token keyToken = LexerNext();
+    Token afterKey;
+    
+    if(keyToken.type == TOKEN_LIT_NUMBER || keyToken.type == TOKEN_LIT_FLOAT) {
+      CompileError(keyToken.line, "A dictionary key must be a string, like %s[\"name\"]", nameToken.value);
+    }
+    
+    if(keyToken.type == TOKEN_LIT_STRING) {
+      access.keyLiteral = keyToken.value;
+      afterKey = LexerNext();
+    } else {
+      StringResult key = ParseStringValue(keyToken);
+      
+      EmitPushStringValue(key, keyToken.line);
+      
+      access.keyFromStack = 1;
+      afterKey = key.next;
+    }
+    
+    if(afterKey.type != TOKEN_RBRACKET) {
+      CompileError(afterKey.line, "Expected ]");
+    }
+    
+    access.hasKey = 1;
+    access.next = LexerNext();
+  } else {
+    access.next = token;
+  }
+  
+  return access;
+}
+
+// An OP_DICT_* instruction aimed at the dictionary (and key) of 'access'
+Instruction MakeDictInstruction(Opcode opcode, DictAccess* access, int line) {
+  Instruction instruction = {0};
+  
+  instruction.opcode = opcode;
+  instruction.varIndex = access->symIndex;
+  instruction.isLocal = symbols[access->symIndex].isLocal;
+  instruction.destIsArray = symbols[access->symIndex].isArray;
+  instruction.stringLiteral = access->keyLiteral;
+  instruction.keyFromStack = access->keyFromStack;
+  instruction.line = line;
+  
+  return instruction;
+}
+
+// Error for a dictionary used without its key where a single value is needed
+void RequireDictKey(DictAccess* access, Token nameToken) {
+  if(!access->hasKey) {
+    CompileError(nameToken.line, "Dictionary '%s' needs a key here, like %s[\"key\"]", nameToken.value, nameToken.value);
+  }
+}
+
 // Parse an optional array index following an identifier that resolves to symbol
 // 'symbolIndex'. 'nameToken' identifies the variable for error messages, and
 // 'afterName' is the token already read immediately after the identifier.
@@ -444,6 +586,8 @@ Token ParseArrayIndex(int symbolIndex, Token nameToken, Token afterName) {
     }
     
     ExprResult index = ParseNumericExpression(LexerNext());
+    
+    AdaptDictReadToInt(&index);
     
     if(index.type != VAR_INT) {
       CompileError(nameToken.line, "Array index must be an int");
@@ -514,6 +658,12 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
           itemToken = value.next;
         } else {
           ExprResult value = ParseNumericExpression(itemToken);
+          
+          if(paramType == VAR_INT) {
+          
+            AdaptDictReadToInt(&value);
+          
+          }
           
           if(paramType == VAR_INT && value.type == VAR_FLOAT) {
             CompileError(nameToken.line, "Cannot use a float value in int array parameter %d of function '%s'", argIndex + 1, func->name);
@@ -628,6 +778,12 @@ Token ParseArrayArgument(FunctionSymbol* func, int argIndex, Token nameToken, To
   
   ExprResult value = ParseNumericExpression(token);
   
+  if(paramType == VAR_INT) {
+  
+    AdaptDictReadToInt(&value);
+  
+  }
+  
   if(paramType == VAR_INT && value.type == VAR_FLOAT) {
     CompileError(nameToken.line, "Cannot use a float value in int array parameter %d of function '%s'", argIndex + 1, func->name);
   }
@@ -707,6 +863,12 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
       } else {
         // int or float parameter
         ExprResult value = ParseNumericExpression(token);
+        
+        if(paramType == VAR_INT) {
+        
+          AdaptDictReadToInt(&value);
+        
+        }
         
         if(paramType == VAR_INT && value.type == VAR_FLOAT) {
           CompileError(nameToken.line, "Cannot pass a float value for int parameter %d of function '%s'", argIndex + 1, func->name);
@@ -842,6 +1004,8 @@ ExprResult ParseNumericIdentifier(Token token, Token afterName) {
       
       ExprResult idxExpr = ParseNumericExpression(LexerNext());
       
+      AdaptDictReadToInt(&idxExpr);
+      
       if(idxExpr.type != VAR_INT) {
         CompileError(token.line, "Array index must be an int");
       }
@@ -882,6 +1046,26 @@ ExprResult ParseNumericIdentifier(Token token, Token afterName) {
   }
   
   VarType type = symbols[index].type;
+  
+  // dict["key"] as a number: any int or float it holds. Its type is only
+  // known when the program runs, so it counts as a float in math.
+  if(type == VAR_DICT) {
+    DictAccess access = ParseDictAccess(token, afterName);
+    
+    RequireDictKey(&access, token);
+    
+    Instruction get = MakeDictInstruction(OP_DICT_GET_NUM, &access, token.line);
+    
+    get.valueType = VAR_FLOAT;
+    
+    EmitInstruction(get);
+    
+    result.next = access.next;
+    result.type = VAR_FLOAT;
+    result.dictBare = 1;
+    
+    return result;
+  }
   
   if(type != VAR_INT && type != VAR_FLOAT) {
     CompileError(token.line, "Variable '%s' cannot be used in a math expression", token.value);
@@ -1030,6 +1214,7 @@ ExprResult ParseNumericTermTail(ExprResult left) {
     
     left.type = (left.type == VAR_FLOAT || right.type == VAR_FLOAT) ? VAR_FLOAT : VAR_INT;
     left.next = right.next;
+    left.dictBare = 0;
   }
   
   return left;
@@ -1056,6 +1241,7 @@ ExprResult ParseNumericExpressionTail(ExprResult left) {
     
     left.type = (left.type == VAR_FLOAT || right.type == VAR_FLOAT) ? VAR_FLOAT : VAR_INT;
     left.next = right.next;
+    left.dictBare = 0;
   }
   
   return left;
@@ -1208,6 +1394,8 @@ StringResult ParseStringIdentifier(Token token, Token afterName) {
       
       ExprResult idxExpr = ParseNumericExpression(LexerNext());
       
+      AdaptDictReadToInt(&idxExpr);
+      
       if(idxExpr.type != VAR_INT) {
         CompileError(token.line, "Array index must be an int");
       }
@@ -1240,6 +1428,25 @@ StringResult ParseStringIdentifier(Token token, Token afterName) {
   
   if(index == -1) {
     CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+  }
+  
+  // dict["key"] as a string: the entry has to hold a str
+  if(symbols[index].type == VAR_DICT) {
+    DictAccess access = ParseDictAccess(token, afterName);
+    
+    RequireDictKey(&access, token);
+    
+    Instruction get = MakeDictInstruction(OP_DICT_GET_STR, &access, token.line);
+    
+    get.valueType = VAR_STR;
+    
+    EmitInstruction(get);
+    
+    result.next = access.next;
+    result.srcVarIndex = -1;
+    result.sourceFromArgStack = 1;
+    
+    return result;
   }
   
   if(symbols[index].type != VAR_STR) {
@@ -1300,6 +1507,16 @@ BoolResult ParseBoolIdentifier(Token token, Token afterName) {
   BoolResult result = {0};
   
   if(afterName.type == TOKEN_LPAREN) {
+    int builtinIndex = FindBuiltin(token.value);
+    
+    if(builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_BOOL) {
+      BuiltinCallResult call = ParseBuiltinCall(builtinIndex, token);
+      
+      result.next = call.next;
+      
+      return result;
+    }
+    
     int funcIndex = FindFunction(token.value);
     
     if(funcIndex == -1) {
@@ -1321,6 +1538,10 @@ BoolResult ParseBoolIdentifier(Token token, Token afterName) {
   
   if(index == -1) {
     CompileError(token.line, "Undefined symbol \"%s\"", token.value);
+  }
+  
+  if(symbols[index].type == VAR_DICT) {
+    CompileError(token.line, "A dictionary entry cannot be used as a bool, dictionaries hold int, float and str values");
   }
   
   if(symbols[index].type != VAR_BOOL) {
@@ -1574,7 +1795,43 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
       isBoolSymbol = index != -1 && symbols[index].type == VAR_BOOL;
     }
     
-    if(isStringSymbol) {
+    int isDictSymbol = afterName.type != TOKEN_LPAREN && FindSymbol(token.value) != -1 &&
+      symbols[FindSymbol(token.value)].type == VAR_DICT;
+    
+    if(isDictSymbol) {
+      DictAccess access = ParseDictAccess(token, afterName);
+      
+      RequireDictKey(&access, token);
+      
+      LexerTokenType after = access.next.type;
+      
+      if(after != TOKEN_OP_ADD && after != TOKEN_OP_SUB && after != TOKEN_OP_MUL && after != TOKEN_OP_DIV) {
+        // The entry on its own: it goes in as whatever type it holds
+        EmitInstruction(MakeDictInstruction(OP_DICT_FORMAT_ARG, &access, line));
+        
+        *outNext = access.next;
+        
+        return VAR_DICT;
+      }
+      
+      // Math on the entry (dict["a"] + 1): a number, like in any expression
+      Instruction get = MakeDictInstruction(OP_DICT_GET_NUM, &access, line);
+      
+      get.valueType = VAR_FLOAT;
+      
+      EmitInstruction(get);
+      
+      ExprResult value = {0};
+      
+      value.next = access.next;
+      value.type = VAR_FLOAT;
+      
+      value = ParseNumericTermTail(value);
+      value = ParseNumericExpressionTail(value);
+      
+      *outNext = value.next;
+      type = value.type;
+    } else if(isStringSymbol) {
       StringResult value = ParseStringIdentifier(token, afterName);
       
       EmitPushStringValue(value, line);
@@ -1655,6 +1912,27 @@ BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken) {
     
     VarType argType;
     
+    if(def->argKinds[i] == ARG_DICT) {
+      int dictIndex = token.type == TOKEN_IDENTIFIER ? FindSymbol(token.value) : -1;
+      
+      if(dictIndex == -1 || symbols[dictIndex].type != VAR_DICT) {
+        CompileError(token.line, "%s() argument %d must be a dictionary", def->name, i + 1);
+      }
+      
+      DictAccess access = ParseDictAccess(token, LexerNext());
+      
+      if(access.hasKey) {
+        CompileError(token.line, "%s() needs the whole dictionary, not one of its entries", def->name);
+      }
+      
+      EmitInstruction(MakeDictInstruction(OP_DICT_REF_ARG, &access, nameToken.line));
+      
+      token = access.next;
+      allInt = 0;
+      
+      continue;
+    }
+    
     if(def->argKinds[i] == ARG_ANY) {
       argType = ParseAndEmitFormatArgument(token, &token);
     } else {
@@ -1716,6 +1994,7 @@ BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken) {
     def->returnKind == RET_INT ? VAR_INT :
     def->returnKind == RET_FLOAT ? VAR_FLOAT :
     def->returnKind == RET_STR ? VAR_STR :
+    def->returnKind == RET_BOOL ? VAR_BOOL :
     (allInt ? VAR_INT : VAR_FLOAT);
   
   return result;
@@ -1767,11 +2046,61 @@ ExprResult ParseLenOfString(StringResult value, int line) {
 // to a constant -- no runtime call needed. Anything else (a string literal,
 // a str variable, an indexed str array element, a string-returning call,
 // etc.) falls back to measuring the string's actual length at runtime.
+// len() of a dictionary: the number of keys it has. len(dict["key"]) is the
+// length of the text that entry holds, like len() of any other string.
+// 'argToken' is the dictionary's name and 'afterArg' the token after it.
+ExprResult ParseDictLen(Token argToken, Token afterArg, int line) {
+  DictAccess access = ParseDictAccess(argToken, afterArg);
+  
+  if(access.hasKey) {
+    EmitInstruction(MakeDictInstruction(OP_DICT_GET_STR, &access, line));
+    
+    StringResult value = {0};
+    
+    value.next = access.next;
+    value.srcVarIndex = -1;
+    value.sourceFromArgStack = 1;
+    
+    return ParseLenOfString(value, line);
+  }
+  
+  Instruction begin = {0};
+  
+  begin.opcode = OP_FORMAT_ARG_BEGIN;
+  begin.line = line;
+  
+  EmitInstruction(begin);
+  EmitInstruction(MakeDictInstruction(OP_DICT_REF_ARG, &access, line));
+  
+  if(access.next.type != TOKEN_RPAREN) {
+    CompileError(access.next.line, "Expected )");
+  }
+  
+  Instruction call = {0};
+  
+  call.opcode = OP_CALL_BUILTIN;
+  call.builtinId = BUILTIN_DICT_LEN;
+  call.line = line;
+  
+  EmitInstruction(call);
+  
+  ExprResult result = {0};
+  
+  result.next = LexerNext();
+  result.type = VAR_INT;
+  
+  return result;
+}
+
 ExprResult ParseLenCall(Token nameToken) {
   Token argToken = LexerNext();
   
   if(argToken.type == TOKEN_IDENTIFIER) {
     int index = FindSymbol(argToken.value);
+    
+    if(index != -1 && symbols[index].type == VAR_DICT && !symbols[index].isArray) {
+      return ParseDictLen(argToken, LexerNext(), nameToken.line);
+    }
     
     if(index != -1 && symbols[index].isArray) {
       Token afterArg = LexerNext();
@@ -1795,6 +2124,10 @@ ExprResult ParseLenCall(Token nameToken) {
         result.type = VAR_INT;
         
         return result;
+      }
+      
+      if(symbols[index].type == VAR_DICT) {
+        return ParseDictLen(argToken, afterArg, nameToken.line);
       }
       
       return ParseLenOfString(ParseStringIdentifier(argToken, afterArg), nameToken.line);
@@ -1901,6 +2234,7 @@ Token EmitFormatArgsAndBuild(Token fmtToken, StringResult fmtValue, LexerTokenTy
     if(knownSpecifiers != NULL && argCount < knownSpecifierCount) {
       char specifier = knownSpecifiers[argCount];
       int ok =
+        argType == VAR_DICT ||
         (specifier == 's' && argType == VAR_STR) ||
         (specifier == 'b' && argType == VAR_BOOL) ||
         ((specifier == 'd' || specifier == 'f') && (argType == VAR_INT || argType == VAR_FLOAT));
@@ -2361,6 +2695,10 @@ CondResult ParseComparison(Token token) {
   // to the same general string-value comparison used below.
   if(token.type == TOKEN_IDENTIFIER) {
     int strIndex = FindSymbol(token.value);
+    
+    if(strIndex != -1 && symbols[strIndex].type == VAR_DICT) {
+      return ParseDictComparison(token);
+    }
     
     if(strIndex != -1 && symbols[strIndex].type == VAR_STR) {
       Token afterName = LexerNext();
@@ -2832,6 +3170,12 @@ Token EmitElementStore(VarType varType, int varIndex, int destIsLocal, Token val
   
   ExprResult result = ParseNumericExpression(valueToken);
   
+  if(varType == VAR_INT) {
+  
+    AdaptDictReadToInt(&result);
+  
+  }
+  
   if(varType == VAR_INT && result.type == VAR_FLOAT) {
     CompileError(valueToken.line, "Cannot assign float value to int array element");
   }
@@ -2880,6 +3224,436 @@ int ParsePositiveSize(Token sizeToken, char* what) {
   return (int) value;
 }
 
+void ExpectTerminator(Token token, LexerTokenType terminator);
+
+// True if this token is one of + - * /
+int IsArithmeticOperator(LexerTokenType type) {
+  return type == TOKEN_OP_ADD || type == TOKEN_OP_SUB || type == TOKEN_OP_MUL || type == TOKEN_OP_DIV;
+}
+
+// Parse the value that goes into dictionary entry 'access' (in dict["key"] =
+// value, or after the colon in a dictionary literal), and emit the code that
+// stores it. The code that evaluates the element index and the key is
+// already emitted. The value can be a string, an int/float expression, or
+// another dictionary entry (copied with whatever type it holds). Returns the
+// token after the value.
+Token ParseDictValue(DictAccess* access, Token token, int line) {
+  if(token.type == TOKEN_KW_NONE) {
+    CompileError(token.line, "A dictionary cannot hold NONE");
+  }
+  
+  if(token.type == TOKEN_LIT_BOOL) {
+    CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+  }
+  
+  // 0 = number, 1 = string, 2 = another dictionary entry
+  int kind = 0;
+  Token afterName = {0};
+  int hasAfterName = 0;
+  
+  if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT || token.type == TOKEN_TYPE_STR) {
+    kind = 1;
+  } else if(token.type == TOKEN_IDENTIFIER) {
+    afterName = LexerNext();
+    hasAfterName = 1;
+    
+    if(afterName.type == TOKEN_LPAREN) {
+      int funcIndex = FindFunction(token.value);
+      int builtinIndex = FindBuiltin(token.value);
+      
+      if((funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_STR) ||
+         (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_STR)) {
+        kind = 1;
+      }
+      
+      if((funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_BOOL) ||
+         (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_BOOL)) {
+        CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+      }
+    } else {
+      int index = FindSymbol(token.value);
+      
+      if(index != -1 && symbols[index].type == VAR_STR) {
+        kind = 1;
+      } else if(index != -1 && symbols[index].type == VAR_BOOL) {
+        CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+      } else if(index != -1 && symbols[index].type == VAR_DICT) {
+        kind = 2;
+      }
+    }
+  }
+  
+  if(kind == 1) {
+    StringResult value = hasAfterName ? ParseStringIdentifier(token, afterName) : ParseStringValue(token);
+    
+    EmitPushStringValue(value, line);
+    EmitInstruction(MakeDictInstruction(OP_DICT_SET_STR, access, line));
+    
+    return value.next;
+  }
+  
+  if(kind == 2) {
+    DictAccess source = ParseDictAccess(token, afterName);
+    
+    RequireDictKey(&source, token);
+    
+    if(!IsArithmeticOperator(source.next.type)) {
+      // A plain copy of the entry, whatever type it holds
+      EmitInstruction(MakeDictInstruction(OP_DICT_GET_DYN, &source, line));
+      EmitInstruction(MakeDictInstruction(OP_DICT_SET_DYN, access, line));
+      
+      return source.next;
+    }
+    
+    // Math on the entry: the result is a number
+    Instruction get = MakeDictInstruction(OP_DICT_GET_NUM, &source, line);
+    
+    get.valueType = VAR_FLOAT;
+    
+    EmitInstruction(get);
+    
+    ExprResult math = {0};
+    
+    math.next = source.next;
+    math.type = VAR_FLOAT;
+    
+    math = ParseNumericTermTail(math);
+    math = ParseNumericExpressionTail(math);
+    
+    Instruction set = MakeDictInstruction(OP_DICT_SET_NUM, access, line);
+    
+    set.valueType = math.type;
+    
+    EmitInstruction(set);
+    
+    return math.next;
+  }
+  
+  ExprResult value;
+  
+  if(hasAfterName) {
+    value = ParseNumericIdentifier(token, afterName);
+    value = ParseNumericTermTail(value);
+    value = ParseNumericExpressionTail(value);
+  } else {
+    value = ParseNumericExpression(token);
+  }
+  
+  if(value.type == VAR_BOOL) {
+    CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+  }
+  
+  Instruction set = MakeDictInstruction(OP_DICT_SET_NUM, access, line);
+  
+  set.valueType = value.type;
+  
+  EmitInstruction(set);
+  
+  return value.next;
+}
+
+// var dict name;   var dict name[size];   var dict name = {"key": value, ...};
+// 'name' is the variable name token and 'next' the token after the name (and
+// after the [size], if any).
+Token ParseDictDeclaration(Token name, Token next, int isArray, int arraySize) {
+  int index = DeclareSymbol(name.value, VAR_DICT, isArray, arraySize, 0, name.line);
+  
+  Instruction declare = {0};
+  
+  declare.opcode = OP_DECLARE_DICT;
+  declare.varIndex = index;
+  declare.isLocal = symbols[index].isLocal;
+  declare.isArray = isArray;
+  declare.arraySize = arraySize;
+  declare.text = name.value;
+  declare.line = name.line;
+  
+  EmitInstruction(declare);
+  
+  if(next.type == TOKEN_SEMICOLON) {
+    return LexerNext();
+  }
+  
+  if(next.type != TOKEN_OP_ASSIGN) {
+    CompileError(next.line, "Expected ; or =");
+  }
+  
+  if(isArray) {
+    CompileError(next.line, "An array of dictionaries cannot have initial values. Set the entries one by one, like %s[0][\"key\"] = value;", name.value);
+  }
+  
+  Token open = LexerNext();
+  
+  if(open.type != TOKEN_LBRACE) {
+    CompileError(open.line, "A dictionary starts with {, like var dict %s = {\"key\": value};", name.value);
+  }
+  
+  DictAccess access = {0};
+  
+  access.symIndex = index;
+  
+  Token token = LexerNext();
+  
+  while(token.type != TOKEN_RBRACE) {
+    if(token.type != TOKEN_LIT_STRING) {
+      CompileError(token.line, "A dictionary key must be a string, like \"name\"");
+    }
+    
+    Token colon = LexerNext();
+    
+    if(colon.type != TOKEN_COLON) {
+      CompileError(colon.line, "Expected : after the key");
+    }
+    
+    access.keyLiteral = token.value;
+    
+    token = ParseDictValue(&access, LexerNext(), token.line);
+    
+    if(token.type == TOKEN_COMMA) {
+      token = LexerNext();
+      continue;
+    }
+    
+    if(token.type != TOKEN_RBRACE) {
+      CompileError(token.line, "Expected , or }");
+    }
+  }
+  
+  Token semicolon = LexerNext();
+  
+  if(semicolon.type != TOKEN_SEMICOLON) {
+    CompileError(semicolon.line, "Expected ;");
+  }
+  
+  return LexerNext();
+}
+
+// A statement that starts with a dictionary: dict["key"] = value;
+// dict["key"] += number;  dict["key"]++;  (also for an element of an array of
+// dictionaries, dicts[i]["key"] = value;). 'token' is the dictionary name and
+// 'afterName' the token after it.
+Token ParseDictStatement(Token token, Token afterName, LexerTokenType terminator) {
+  DictAccess access = ParseDictAccess(token, afterName);
+  
+  if(!access.hasKey) {
+    CompileError(token.line, "Dictionary '%s' needs a key here, like %s[\"key\"] = value;", token.value, token.value);
+  }
+  
+  Token op = access.next;
+  
+  if(op.type == TOKEN_OP_ASSIGN) {
+    Token after = ParseDictValue(&access, LexerNext(), token.line);
+    
+    ExpectTerminator(after, terminator);
+    
+    return LexerNext();
+  }
+  
+  if(op.type == TOKEN_OP_PLUS_ASSIGN || op.type == TOKEN_OP_MINUS_ASSIGN) {
+    ExprResult amount = ParseNumericExpression(LexerNext());
+    
+    if(amount.type == VAR_BOOL) {
+      CompileError(op.line, "+= and -= need a number");
+    }
+    
+    Instruction update = MakeDictInstruction(OP_DICT_UPDATE, &access, token.line);
+    
+    update.valueType = amount.type;
+    update.dictOp = op.type == TOKEN_OP_PLUS_ASSIGN ? 0 : 1;
+    
+    EmitInstruction(update);
+    
+    ExpectTerminator(amount.next, terminator);
+    
+    return LexerNext();
+  }
+  
+  if(op.type == TOKEN_OP_INC || op.type == TOKEN_OP_DEC) {
+    Token after = LexerNext();
+    
+    ExpectTerminator(after, terminator);
+    
+    Instruction one = {0};
+    
+    one.opcode = OP_PUSH_NUMBER;
+    one.numberValue = 1;
+    
+    EmitInstruction(one);
+    
+    Instruction update = MakeDictInstruction(OP_DICT_UPDATE, &access, token.line);
+    
+    update.valueType = VAR_INT;
+    update.dictOp = op.type == TOKEN_OP_INC ? 0 : 1;
+    
+    EmitInstruction(update);
+    
+    return LexerNext();
+  }
+  
+  CompileError(op.line, "Expected = after a dictionary entry");
+}
+
+// A comparison that starts with a dictionary entry: dict["age"] >= 18,
+// dict["name"] == "Delfin", dict["a"] == other["a"]. What the entry holds is
+// only known when the program runs, so the compiler looks at what it is
+// compared with: a string makes it a string comparison, another entry makes
+// it a comparison on whatever both hold, anything else is a number.
+CondResult ParseDictComparison(Token token) {
+  DictAccess access = ParseDictAccess(token, LexerNext());
+  
+  RequireDictKey(&access, token);
+  
+  Instruction get = MakeDictInstruction(OP_DICT_GET_NUM, &access, token.line);
+  
+  get.valueType = VAR_FLOAT;
+  
+  int getIndex = EmitInstruction(get);
+  
+  ExprResult left = {0};
+  
+  left.next = access.next;
+  left.type = VAR_FLOAT;
+  left.dictBare = 1;
+  
+  LexerTokenType op = left.next.type;
+  
+  int isComparison = op == TOKEN_OP_GT || op == TOKEN_OP_LT || op == TOKEN_OP_EQ ||
+                     op == TOKEN_OP_GE || op == TOKEN_OP_LE || op == TOKEN_OP_NE;
+  
+  if(!isComparison) {
+    // Math on the entry (dict["a"] + 1 > 2), or just the number itself
+    left = ParseNumericTermTail(left);
+    left = ParseNumericExpressionTail(left);
+    
+    CondResult leftCond = {0};
+    
+    leftCond.next = left.next;
+    leftCond.type = left.type;
+    
+    return ParseComparisonTail(leftCond, bytecodeCount, bytecodeCount);
+  }
+  
+  int opLine = left.next.line;
+  Token rhsToken = LexerNext();
+  
+  if(rhsToken.type == TOKEN_KW_NONE) {
+    CompileError(opLine, "A dictionary entry cannot be compared with NONE, use has_key(%s, \"key\") to see if a key exists", token.value);
+  }
+  
+  // What is on the right: 0 = a number, 1 = a string, 2 = another entry
+  int rhsKind = 0;
+  Token rhsAfter = {0};
+  int hasRhsAfter = 0;
+  
+  if(LooksLikeGeneralStringValue(rhsToken)) {
+    rhsKind = 1;
+  } else if(rhsToken.type == TOKEN_IDENTIFIER) {
+    rhsAfter = LexerNext();
+    hasRhsAfter = 1;
+    
+    if(rhsAfter.type != TOKEN_LPAREN) {
+      int index = FindSymbol(rhsToken.value);
+      
+      if(index != -1 && symbols[index].type == VAR_STR) {
+        rhsKind = 1;
+      } else if(index != -1 && symbols[index].type == VAR_DICT) {
+        rhsKind = 2;
+      }
+    }
+  }
+  
+  CondResult result = {0};
+  
+  result.type = VAR_BOOL;
+  
+  if(rhsKind == 1) {
+    if(op != TOKEN_OP_EQ && op != TOKEN_OP_NE) {
+      CompileError(opLine, "Strings can only be compared with == or !=");
+    }
+    
+    // The entry on the left has to be a string: its text is already pushed
+    bytecode[getIndex].opcode = OP_DICT_GET_STR;
+    bytecode[getIndex].valueType = VAR_STR;
+    
+    StringResult rhs = hasRhsAfter ? ParseStringIdentifier(rhsToken, rhsAfter) : ParseStringValue(rhsToken);
+    
+    EmitPushStringValue(rhs, opLine);
+    
+    Instruction cmp = {0};
+    
+    cmp.opcode = (op == TOKEN_OP_EQ) ? OP_CMP_STR_EQ : OP_CMP_STR_NE;
+    cmp.line = opLine;
+    
+    EmitInstruction(cmp);
+    
+    result.next = rhs.next;
+    
+    return result;
+  }
+  
+  Instruction cmp = {0};
+  
+  cmp.line = opLine;
+  
+  if(rhsKind == 2) {
+    DictAccess right = ParseDictAccess(rhsToken, rhsAfter);
+    
+    RequireDictKey(&right, rhsToken);
+    
+    if(!IsArithmeticOperator(right.next.type)) {
+      // Entry against entry: compared as whatever both of them hold
+      bytecode[getIndex].opcode = OP_DICT_GET_DYN;
+      
+      EmitInstruction(MakeDictInstruction(OP_DICT_GET_DYN, &right, opLine));
+      
+      cmp.opcode = OP_DICT_CMP;
+      cmp.dictOp = op == TOKEN_OP_EQ ? 0 : op == TOKEN_OP_NE ? 1 : op == TOKEN_OP_GT ? 2 :
+                   op == TOKEN_OP_LT ? 3 : op == TOKEN_OP_GE ? 4 : 5;
+      
+      EmitInstruction(cmp);
+      
+      result.next = right.next;
+      
+      return result;
+    }
+    
+    // Math on the entry on the right: both sides are numbers
+    Instruction rightGet = MakeDictInstruction(OP_DICT_GET_NUM, &right, opLine);
+    
+    rightGet.valueType = VAR_FLOAT;
+    
+    EmitInstruction(rightGet);
+    
+    ExprResult math = {0};
+    
+    math.next = right.next;
+    math.type = VAR_FLOAT;
+    
+    math = ParseNumericTermTail(math);
+    math = ParseNumericExpressionTail(math);
+    
+    result.next = math.next;
+  } else if(hasRhsAfter) {
+    ExprResult right = ParseNumericIdentifier(rhsToken, rhsAfter);
+    
+    right = ParseNumericTermTail(right);
+    right = ParseNumericExpressionTail(right);
+    
+    result.next = right.next;
+  } else {
+    CondResult right = ParseConditionOperand(rhsToken);
+    
+    result.next = right.next;
+  }
+  
+  cmp.opcode = op == TOKEN_OP_EQ ? OP_CMP_EQ : op == TOKEN_OP_NE ? OP_CMP_NE : op == TOKEN_OP_GT ? OP_CMP_GT :
+               op == TOKEN_OP_LT ? OP_CMP_LT : op == TOKEN_OP_GE ? OP_CMP_GE : OP_CMP_LE;
+  
+  EmitInstruction(cmp);
+  
+  return result;
+}
+
 Token ParseVarDeclaration() {
   Token type = LexerNext();
   
@@ -2893,6 +3667,8 @@ Token ParseVarDeclaration() {
     varType = VAR_STR;
   } else if(type.type == TOKEN_TYPE_BOOL) {
     varType = VAR_BOOL;
+  } else if(type.type == TOKEN_TYPE_DICT) {
+    varType = VAR_DICT;
   } else {
     CompileError(type.line, "Expected type");
   }
@@ -2950,6 +3726,10 @@ Token ParseVarDeclaration() {
     }
     
     next = LexerNext();
+  }
+  
+  if(varType == VAR_DICT) {
+    return ParseDictDeclaration(name, next, isArray, arraySize);
   }
   
   if(isArray) {
@@ -3126,6 +3906,12 @@ Token ParseVarDeclaration() {
     } else {
       ExprResult result = ParseNumericExpression(afterAssign);
       
+      if(varType == VAR_INT) {
+      
+        AdaptDictReadToInt(&result);
+      
+      }
+      
       if(varType == VAR_INT && result.type == VAR_FLOAT) {
         CompileError(afterAssign.line, "Cannot assign float value to int array");
       }
@@ -3258,6 +4044,12 @@ Token ParseVarDeclaration() {
       int valueStart = bytecodeCount;
       ExprResult exprResult = ParseNumericExpression(value);
       int valueEnd = bytecodeCount;
+      
+      if(varType == VAR_INT) {
+      
+        AdaptDictReadToInt(&exprResult);
+      
+      }
       
       if(varType == VAR_INT && exprResult.type == VAR_FLOAT) {
         CompileError(value.line, "Cannot assign float value to int variable '%s'", name.value);
@@ -3393,6 +4185,10 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
     CompileError(token.line, "Undefined symbol \"%s\"", token.value);
   }
   
+  if(symbols[index].type == VAR_DICT) {
+    return ParseDictStatement(token, afterName, terminator);
+  }
+  
   int destIsLocal = symbols[index].isLocal;
   
   int isIndexed = symbols[index].isArray;
@@ -3409,6 +4205,8 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
     idxStart = bytecodeCount;
     
     ExprResult idxExpr = ParseNumericExpression(LexerNext());
+    
+    AdaptDictReadToInt(&idxExpr);
     
     if(idxExpr.type != VAR_INT) {
       CompileError(token.line, "Array index must be an int");
@@ -3503,6 +4301,12 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
     
     Token rhsToken = LexerNext();
     ExprResult rhs = ParseNumericExpression(rhsToken);
+    
+    if(compoundType == VAR_INT) {
+    
+      AdaptDictReadToInt(&rhs);
+    
+    }
     
     if(compoundType == VAR_INT && rhs.type == VAR_FLOAT) {
       CompileError(rhsToken.line, "Cannot use a float value with += or -= on int variable '%s'", token.value);
@@ -3614,6 +4418,12 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
       int valueStart = bytecodeCount;
       ExprResult result = ParseNumericExpression(value);
       int valueEnd = bytecodeCount;
+      
+      if(varType == VAR_INT) {
+      
+        AdaptDictReadToInt(&result);
+      
+      }
       
       if(varType == VAR_INT && result.type == VAR_FLOAT) {
         CompileError(value.line, "Cannot assign float value to int variable '%s'", token.value);
@@ -3806,6 +4616,8 @@ Token ParsePrintStatement() {
         
         ExprResult idxExpr = ParseNumericExpression(LexerNext());
         
+        AdaptDictReadToInt(&idxExpr);
+        
         if(idxExpr.type != VAR_INT) {
           CompileError(value.line, "Array index must be an int");
         }
@@ -3878,6 +4690,56 @@ Token ParsePrintStatement() {
     }
     
     int index = FindSymbol(value.value);
+    
+    if(index != -1 && symbols[index].type == VAR_DICT) {
+      DictAccess access = ParseDictAccess(value, afterName);
+      
+      // print dict; writes the whole dictionary
+      if(!access.hasKey) {
+        if(access.next.type != TOKEN_SEMICOLON) {
+          CompileError(access.next.line, "Expected ;");
+        }
+        
+        EmitInstruction(MakeDictInstruction(OP_DICT_PRINT_ALL, &access, value.line));
+        
+        return LexerNext();
+      }
+      
+      // print dict["key"]; writes the entry as whatever type it holds
+      if(access.next.type == TOKEN_SEMICOLON) {
+        EmitInstruction(MakeDictInstruction(OP_DICT_PRINT_VALUE, &access, value.line));
+        
+        return LexerNext();
+      }
+      
+      // print dict["a"] + 1; an expression that starts with an entry
+      Instruction get = MakeDictInstruction(OP_DICT_GET_NUM, &access, value.line);
+      
+      get.valueType = VAR_FLOAT;
+      
+      EmitInstruction(get);
+      
+      ExprResult math = {0};
+      
+      math.next = access.next;
+      math.type = VAR_FLOAT;
+      
+      math = ParseNumericTermTail(math);
+      math = ParseNumericExpressionTail(math);
+      
+      if(math.next.type != TOKEN_SEMICOLON) {
+        CompileError(math.next.line, "Expected ;");
+      }
+      
+      Instruction printMath = {0};
+      
+      printMath.opcode = OP_PRINT_VALUE;
+      printMath.valueType = math.type;
+      
+      EmitInstruction(printMath);
+      
+      return LexerNext();
+    }
     
     if(index != -1 && symbols[index].type == VAR_STR) {
       // Print string variable, optionally an array element
@@ -4013,6 +4875,8 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
       paramType = VAR_STR;
     } else if(typeToken.type == TOKEN_TYPE_BOOL) {
       paramType = VAR_BOOL;
+    } else if(typeToken.type == TOKEN_TYPE_DICT) {
+      CompileError(typeToken.line, "A dictionary cannot be a function parameter. Declare it outside the function and use it directly, or pass its entries one by one");
     } else {
       CompileError(typeToken.line, "Expected type");
     }
@@ -4379,6 +5243,17 @@ Token ParseReturnStatement(Token returnToken) {
   if(afterReturn.type == TOKEN_IDENTIFIER) {
     afterName = LexerNext();
     isFunctionCallLookingAtLparen = (afterName.type == TOKEN_LPAREN);
+  }
+  
+  if(afterReturn.type == TOKEN_IDENTIFIER && !isFunctionCallLookingAtLparen) {
+    int dictIndex = FindSymbol(afterReturn.value);
+    
+    // "return dict;" is not possible. "return dict["key"] + 1;" is: an entry
+    // read as a number is a float, like in any other expression. To return
+    // a text entry, write str(dict["key"]).
+    if(dictIndex != -1 && symbols[dictIndex].type == VAR_DICT && afterName.type != TOKEN_LBRACKET) {
+      CompileError(returnToken.line, "A dictionary cannot be returned from a function. Return one of its entries, like return %s[\"key\"]; or str(%s[\"key\"]) for a text", afterReturn.value, afterReturn.value);
+    }
   }
   
   // "return someArray;" -- a bare array variable, not indexed. If it were

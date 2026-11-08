@@ -28,6 +28,7 @@ typedef enum {
   TOKEN_TYPE_FLOAT,
   TOKEN_TYPE_STR,
   TOKEN_TYPE_BOOL,
+  TOKEN_TYPE_DICT,
   
   
   // literal
@@ -66,6 +67,7 @@ typedef enum {
   TOKEN_LBRACE,
   TOKEN_RBRACE,
   TOKEN_COMMA,
+  TOKEN_COLON,
   
   
   TOKEN_IDENTIFIER,

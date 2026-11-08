@@ -114,7 +114,54 @@ typedef enum {
   // collected the same way OP_CALL_BUILTIN's are (OP_FORMAT_ARG_BEGIN, one
   // OP_FORMAT_ARG per argument), 'nativeIndex' says which native to run, and
   // its result (if it has one) is pushed like a user function's return value.
-  OP_CALL_NATIVE
+  OP_CALL_NATIVE,
+  
+  // Dictionaries (the 'dict' type, see dict.h). The dictionary an instruction
+  // works on is variable 'varIndex' (+ the element index popped from the
+  // numeric stack when 'destIsArray' is set, for an array of dictionaries).
+  // The key is 'stringLiteral' when it was written as a literal, or the top
+  // of the string-value stack when 'keyFromStack' is set.
+  
+  // Make the dictionary (or array of dictionaries) of a 'var dict' declaration
+  OP_DECLARE_DICT,
+  
+  // dict["key"] = value: pops the number (valueType says int or float) off
+  // the numeric stack, or the text off the string-value stack
+  OP_DICT_SET_NUM,
+  OP_DICT_SET_STR,
+  
+  // dict["key"] used as a value: pushes the number onto the numeric stack, or
+  // the text onto the string-value stack. 'valueType' is the type the value
+  // has to be (VAR_FLOAT for any number, VAR_INT when it has to be a whole
+  // number, VAR_STR), a different type stored there is a runtime error.
+  OP_DICT_GET_NUM,
+  OP_DICT_GET_STR,
+  
+  // dict["key"] += / -= number: the key must already hold a number. 'dictOp'
+  // is 0 for + and 1 for -, 'valueType' is the type of the number popped off
+  // the numeric stack (the result stays an int only if both sides are ints).
+  OP_DICT_UPDATE,
+  
+  // print dict["key"]; and a dict["key"] argument of format() / print: the
+  // value is printed (or collected) as whatever type it holds.
+  OP_DICT_PRINT_VALUE,
+  OP_DICT_FORMAT_ARG,
+  
+  // print dict; writes the whole dictionary, like {"a": 1, "b": "text"}
+  OP_DICT_PRINT_ALL,
+  
+  // A whole dictionary as the argument of a built-in function (len, has_key,
+  // key_at, remove_key): adds it to the argument list being collected.
+  OP_DICT_REF_ARG,
+  
+  // dict["a"] = other["b"] and dict["a"] == other["b"], where neither side's
+  // type is known before the program runs: OP_DICT_GET_DYN reads an entry
+  // (int, float or str) onto its own stack, OP_DICT_SET_DYN stores the top of
+  // that stack in an entry, and OP_DICT_CMP compares the top two ('dictOp' is
+  // 0 for ==, 1 !=, 2 >, 3 <, 4 >=, 5 <=) and pushes the bool result.
+  OP_DICT_GET_DYN,
+  OP_DICT_SET_DYN,
+  OP_DICT_CMP
 } Opcode;
 
 // Which native implementation OP_CALL_BUILTIN should run. len() only
@@ -137,7 +184,13 @@ typedef enum {
   BUILTIN_UPPER,
   BUILTIN_LOWER,
   BUILTIN_TRIM,
-  BUILTIN_RANDOM
+  BUILTIN_RANDOM,
+  
+  // Dictionary built-ins: len(dict) is BUILTIN_DICT_LEN
+  BUILTIN_DICT_LEN,
+  BUILTIN_HAS_KEY,
+  BUILTIN_KEY_AT,
+  BUILTIN_REMOVE_KEY
 } BuiltinId;
 
 // Supported variable types
@@ -145,7 +198,11 @@ typedef enum {
   VAR_INT,
   VAR_FLOAT,
   VAR_STR,
-  VAR_BOOL
+  VAR_BOOL,
+  
+  // A dictionary (see dict.h). Also used as the type of a value that is only
+  // known when the program runs, like a dictionary entry given to format().
+  VAR_DICT
 } VarType;
 
 // Single variable entry. A scalar is simply an array with arraySize == 1,
@@ -175,6 +232,10 @@ typedef struct {
   // value, or was explicitly set to NONE. Not used for VAR_BOOL. Allocated to
   // arraySize elements.
   int* isNone;
+  
+  // Holds dictionaries, only used when type is VAR_DICT. Allocated to
+  // arraySize pointers, each one to a dictionary (see dict.h).
+  struct Dict** dicts;
 } Variable;
 
 // Single bytecode instruction
@@ -293,6 +354,13 @@ typedef struct {
   // Which plugin native OP_CALL_NATIVE should run -- an index into the
   // registry in plugin.c.
   int nativeIndex;
+  
+  // The dictionary key is on top of the string-value stack instead of being
+  // the literal in stringLiteral. Used by the OP_DICT_* instructions.
+  int keyFromStack;
+  
+  // Which operation OP_DICT_UPDATE does: 0 adds, 1 subtracts.
+  int dictOp;
 } Instruction;
 
 // Execute bytecode

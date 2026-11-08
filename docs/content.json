@@ -65,6 +65,16 @@
       "desc": "Copying values between array elements."
     }
   },
+  "Dictionaries": {
+    "dict": {
+      "file_md": "content/dictionaries/dictionary.md",
+      "desc": "The dict data type: named values like a Python dictionary or JSON object, and arrays of dictionaries."
+    },
+    "Dictionary Functions": {
+      "file_md": "content/dictionaries/dictionary-functions.md",
+      "desc": "len(), has_key(), remove_key() and key_at() for dictionaries."
+    }
+  },
   "Operators": {
     "Assignment Operators": {
       "file_md": "content/operators/assignment-operators.md",

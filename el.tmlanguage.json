@@ -88,7 +88,7 @@
         {
           "comment": "Built-in functions added in v0.7.0b -- type conversion, string parsing, math, and string utilities",
           "name": "support.function.builtin.ellang",
-          "match": "\\b(len|sscanf|split|abs|min|max|pow|sqrt|round|floor|ceil|upper|lower|trim|random)\\b"
+          "match": "\\b(len|sscanf|split|abs|min|max|pow|sqrt|round|floor|ceil|upper|lower|trim|random|has_key|remove_key|key_at)\\b"
         },
         {
           "name": "storage.type.var.ellang",
@@ -104,7 +104,7 @@
       "patterns": [
         {
           "name": "storage.type.ellang",
-          "match": "\\b(int|float|str|bool)\\b"
+          "match": "\\b(int|float|str|bool|dict)\\b"
         }
       ]
     },

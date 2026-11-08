@@ -17,6 +17,15 @@ filename (line) : message
 | `Division by zero` | An `int` or `float` division (`/`) had `0` as its divisor. |
 | `Array index N out of bounds (size S)` | An array was accessed at an index outside its declared size. |
 | `Stack overflow: too many nested/recursive function calls` | A function call chain (typically recursion) exceeded EL's maximum call depth, a safeguard against runaway/infinite recursion. |
+| `Key "k" not found in dictionary 'd'` | A dictionary entry was read, or changed with `+=`, `++`, `--`, for a key it does not have. Check with `has_key()` first. See [dict](content/dictionaries/dictionary.md). |
+| `Key "k" of dictionary 'd' holds a str, not a number` | An entry that holds text was read as a number (in math, a comparison with a number, or an `int` / `float` variable). |
+| `Key "k" of dictionary 'd' holds an int, not a str` | An entry that holds a number was read as a `str`. |
+| `Key "k" of dictionary 'd' holds the float 2.5, which is not a whole number` | An entry with decimals was read into an `int` variable. Read it into a `float`, or use `int()`. |
+| `Key "k" of dictionary 'd' holds N, which does not fit in an int` | An entry that holds a number outside -2147483648 to 2147483647 was read into an `int`. |
+| `Key "k" of dictionary 'd' holds a str, so + and - cannot be used on it` | `+=`, `-=`, `++` or `--` on an entry that holds text. |
+| `Cannot compare an int with a str` | Two dictionary entries that hold different kinds of value were compared. |
+| `Key position N is out of range (the dictionary has K keys)` | `key_at()` was given a position that does not exist. |
+| `A dictionary key cannot be NONE` | A `str` variable that holds `NONE` was used as a key. |
 | `Plugin function 'f' returned N, which does not fit in an EL int (32 bit)` | A plugin function declared `:int` gave a number outside -2147483648 to 2147483647. |
 | Any other message from a plugin | A plugin function stopped the program on purpose (for example `mysql_query failed: ...`). The text is the plugin's own. See [Plugins](content/modules/plugins.md). |
 

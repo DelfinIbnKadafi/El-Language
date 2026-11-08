@@ -30,7 +30,8 @@ FILES = \
   $(SRC)/elvm.c \
   $(SRC)/source.c \
   $(SRC)/json.c \
-  $(SRC)/plugin.c
+  $(SRC)/plugin.c \
+  $(SRC)/dict.c
 
 
 .PHONY: all clean rebuild

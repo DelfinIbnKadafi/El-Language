@@ -31,6 +31,14 @@ filename (line) : message
 | `Library "x" has no plugin for this system` | `plugins` has no file for the system the program runs on. |
 | `"x" is not an EL plugin` | The file loaded, but it does not export `elp_Supports` and `elp_Load`. |
 | `Plugin "x" cannot add function 'f': ...` | A plugin function has the same name as a function already declared, or a name EL reserves. |
+| `Dictionary 'd' needs a key here, like d["key"]` | A dictionary was used as a single value. Read or write one of its entries instead. |
+| `A dictionary key must be a string, like d["name"]` | A dictionary key was written as a number, like `d[0]`. |
+| `A dictionary holds int, float and str values, not bool` | A `bool` was stored in a dictionary entry. |
+| `A dictionary cannot hold NONE` | `NONE` was stored in a dictionary entry. |
+| `A dictionary cannot be a function parameter` / `A dictionary cannot be returned from a function` | Dictionaries cannot be passed to or returned from functions. See [dict](content/dictionaries/dictionary.md). |
+| `'users' is an array of dictionaries: write the element number first, like users[0]["key"]` | An array of dictionaries was used with a key but no element number, like `users["name"]` instead of `users[0]["name"]`. |
+| `Variable 'users' is an array of dictionaries and must be indexed` | An array of dictionaries was used with nothing after it, like `print users;`. |
+| `A dictionary entry cannot be compared with NONE` | Use `has_key()` to ask whether a key exists. |
 | `'module' can only be used at the top level, not inside a function or a block` | `module` (or `library`) was used inside a function or a block. |
 
 ## Example

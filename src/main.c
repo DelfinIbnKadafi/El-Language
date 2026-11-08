@@ -1,12 +1,23 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "lexer.h"
 #include "elvm.h"
 #include "parser.h"
 #include "source.h"
 
+#define ELVM_VERSION "0.8.3"
+
 // Load source file
 char* LoadFile(char* filename) {
+
+  // cek extension
+  char* ext = strrchr(filename, '.');
+  if(ext == NULL || strcmp(ext, ".ell") != 0) {
+    printf("File must have .ell extension\n");
+    exit(1);
+  }
+
   char* buffer = ReadFileText(filename);
   
   if(buffer == NULL) {
@@ -23,9 +34,15 @@ char* LoadFile(char* filename) {
 }
 
 int main(int argc, char** argv) {
+
   if(argc < 2) {
     printf("Usage: elvm <file.ell>\n");
     return 1;
+  }
+
+  if(strcmp(argv[1], "--version") == 0) {
+    printf("elvm version %s\n", ELVM_VERSION);
+    return 0;
   }
   
   // Remember where elvm is, libraries are searched next to it
