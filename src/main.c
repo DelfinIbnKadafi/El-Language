@@ -4,6 +4,9 @@
 #include "elvm.h"
 #include "parser.h"
 #include "source.h"
+#include "string.h"
+
+#define ELVM_VERSION "0.8.3b"
 
 // Load source file
 char* LoadFile(char* filename) {
@@ -26,6 +29,11 @@ int main(int argc, char** argv) {
   if(argc < 2) {
     printf("Usage: elvm <file.ell>\n");
     return 1;
+  }
+
+  if(strcmp(argv[1], "--version") == 0) {
+    printf("elvm version %s\n", ELVM_VERSION);
+    return 0;
   }
   
   // Remember where elvm is, libraries are searched next to it
