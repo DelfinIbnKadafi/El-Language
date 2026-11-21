@@ -1,0 +1,3 @@
+function mk() =
+  return {"a": 1};
+var int x = mk();

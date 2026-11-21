@@ -1,0 +1,60 @@
+var dict d = {"a": 1, "b": "text", "c": 2.5};
+var dict e;
+
+// copy between dicts, any type
+e["a"] = d["a"];
+e["b"] = d["b"];
+e["c"] = d["c"];
+e["sum"] = d["a"] + d["c"];
+print e;
+
+// keys by variable
+var str k = "dyn";
+e[k] = 7;
+print e[k];
+var str[20] names[2] = {"x", "y"};
+e[names[1]] = "why";
+print e["y"];
+
+// loop over keys
+var int i = 0;
+while(i < len(e)) =
+  var str key = key_at(e, i);
+  print format("%s", key);
+  i++;
+
+// has_key / remove_key
+var bool exists = has_key(e, "dyn");
+print exists;
+print remove_key(e, "dyn");
+print remove_key(e, "dyn");
+print has_key(e, "dyn");
+print len(e);
+
+// conversions
+print int(d["c"]);
+print float(d["a"]);
+print str(d["a"]) ;
+print upper(d["b"]);
+print len(d["b"]);
+var int sz = len(d["b"]);
+print sz;
+
+// functions using values
+function double_it(var int x) =
+  return x * 2;
+function shout(var str s) =
+  return upper(s);
+print double_it(d["a"]);
+print shout(d["b"]);
+
+// global dict used in a function
+function describe() =
+  print d["b"];
+  return d["a"] + 1;
+describe();
+print describe();
+
+// format with dict values
+print "%s has %d and %f", d["b"], d["a"], d["c"];
+print format("[%s]", e["b"]);

@@ -1,0 +1,2 @@
+error-param-wrong-arg.ell (3) : Expected a dictionary (a dictionary variable, or a literal like {"key": value})
+exit=1

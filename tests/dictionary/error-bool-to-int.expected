@@ -1,0 +1,2 @@
+error-bool-to-int.ell (2) : Key "b" of dictionary 'd' holds a bool, not a number
+exit=1

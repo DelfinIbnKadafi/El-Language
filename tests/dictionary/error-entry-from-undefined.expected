@@ -1,0 +1,2 @@
+error-entry-from-undefined.ell (2) : Undefined function "nofunc"
+exit=1

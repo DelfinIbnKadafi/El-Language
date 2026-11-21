@@ -1,0 +1,25 @@
+{"name": "Delfin", "address": {"city": "Jakarta", "zip": 12345, "geo": {"lat": -6.2, "lng": 106.8}}, "active": true}
+Jakarta
+-6.2
+{"city": "Jakarta", "zip": 12345, "geo": {"lat": -6.2, "lng": 106.8}}
+3
+7
+true
+false
+{"city": "Bandung", "zip": 12346, "geo": {"lat": 1.5, "lng": 106.8}, "country": "ID"}
+Bandung 12346
+bandung
+zip > 12000
+{"title": "dev", "years": 3}
+{"a": 1, "b": 2}
+Bandung
+Surabaya
+city
+zip
+geo
+country
+false
+A lives in X
+B lives in Y
+{"name": "B", "home": {"city": "Z"}}
+exit=0

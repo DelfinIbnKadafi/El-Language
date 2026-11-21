@@ -1,0 +1,2 @@
+error-increment-missing.ell (2) : Key "nokey" not found in dictionary 'd'
+exit=1

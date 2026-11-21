@@ -1,0 +1,53 @@
+var dict config = {"host": "localhost", "port": 3306, "ratio": 0.75, "name": "db"};
+print config;
+print config["port"] + 1;
+print config["ratio"] * 2;
+
+var dict users[3];
+users[0]["name"] = "Alice";
+users[0]["age"] = 30;
+users[1]["name"] = "Bob";
+users[1]["age"] = 25;
+users[2]["name"] = "Cara";
+users[2]["age"] = 41;
+
+var int i = 0;
+while(i < len(users)) =
+  print format("%d: %s is %d", i, users[i]["name"], users[i]["age"]);
+  i++;
+
+users[1]["age"] += 5;
+users[1]["age"]++;
+users[2]["age"] -= 1;
+users[0]["score"] = 1.5;
+users[0]["score"] += 2;
+print users[1]["age"];
+print users[2]["age"];
+print users[0]["score"];
+print users[0];
+
+var int idx = 2;
+print users[idx]["name"];
+users[idx]["city"] = "Jakarta";
+print users[idx];
+
+if(config["port"] == 3306) =
+  print "port ok";
+if(config["port"] >= 4000) =
+  print "wrong";
+else =
+  print "port below 4000";
+if(config["host"] == "localhost") =
+  print "host ok";
+if(config["host"] != "remote") =
+  print "host not remote";
+if(users[0]["age"] > users[1]["age"]) =
+  print "wrong order";
+else =
+  print "alice is younger";
+if(users[0]["name"] != users[1]["name"]) =
+  print "names differ";
+if(users[0]["name"] == users[0]["name"]) =
+  print "same name";
+if(config["port"] + 1 > 3306) =
+  print "math in condition";

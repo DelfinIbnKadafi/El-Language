@@ -1,0 +1,2 @@
+error-compare-str-less.ell (2) : Strings can only be compared with == or !=
+exit=1

@@ -1,0 +1,34 @@
+function mk(var int n) =
+  var dict d;
+  d["n"] = n;
+  d["inner"] = {"x": n};
+  return d;
+function take(var dict d) =
+  d["n"] += 1;
+  return int(d["n"]);
+function lit() =
+  return {"a": 1, "b": {"c": 2}};
+
+var dict keep = {"k": 1};
+var dict slot;
+var dict arr[2];
+var int i = 0;
+var int total = 0;
+while(i < 3000) =
+  mk(i);
+  slot = mk(i);
+  arr[1] = mk(i);
+  keep["x"] = mk(i);
+  total += take(mk(i));
+  total += take(slot);
+  total += take({"n": 1});
+  total += take(keep["x"]);
+  var dict local = mk(i);
+  var dict copy = local;
+  copy = lit();
+  slot = {"a": i};
+  keep["lit"] = {"p": {"q": i}};
+  i++;
+print total;
+print slot;
+print keep;

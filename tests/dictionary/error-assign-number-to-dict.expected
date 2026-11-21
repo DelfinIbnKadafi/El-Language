@@ -1,0 +1,2 @@
+error-assign-number-to-dict.ell (2) : Expected a dictionary (a dictionary variable, or a literal like {"key": value})
+exit=1

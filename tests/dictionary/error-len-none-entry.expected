@@ -1,0 +1,2 @@
+error-len-none-entry.ell (2) : Key "n" of dictionary 'd' holds NONE, not a str or a dict, so len() cannot be used on it
+exit=1

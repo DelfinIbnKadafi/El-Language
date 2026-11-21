@@ -1,0 +1,58 @@
+var dict d = {"a": 5, "b": "x", "c": 2.5, "n": -3};
+var dict e;
+var str name = "x";
+var int k = 3;
+function twice(var int v) =
+  return v * 2;
+function tag(var str s) =
+  return upper(s);
+
+e["f1"] = twice(4);
+e["f2"] = tag("abc");
+e["f3"] = len("hello");
+e["f4"] = abs(-7);
+e["f5"] = upper("q");
+e["f6"] = -d["a"];
+e["f7"] = d["a"] * -1;
+e["f8"] = (d["a"] + 1) * 2;
+e["f9"] = d["a"] - d["c"];
+e["f10"] = float(d["a"]) / 2;
+e["f11"] = format("%d-%s", d["a"], d["b"]);
+print e;
+
+if("x" == d["b"]) =
+  print "lit == entry";
+if(name == d["b"]) =
+  print "var == entry";
+if(d["b"] == name) =
+  print "entry == var";
+if(5 == d["a"]) =
+  print "num == entry";
+if(k < d["a"]) =
+  print "var < entry";
+if(d["a"] > k) =
+  print "entry > var";
+if(d["a"] > 1 and d["b"] == "x") =
+  print "and ok";
+if(d["a"] > 100 or d["b"] == "x") =
+  print "or ok";
+if((d["a"] > 1) and (d["c"] < 3)) =
+  print "parens ok";
+if(not (d["a"] == 4)) =
+  print "not ok";
+if(d["a"] != 4 and d["b"] != "y") =
+  print "ne ok";
+if(d["n"] < 0) =
+  print "negative";
+if(d["a"] + 1 == 6) =
+  print "math eq";
+if(d["a"] * 2 > d["c"] * 3) =
+  print "math both";
+if(tag("x") == "X") =
+  print "tag ok";
+if(d["b"] == tag("x")) =
+  print "wrong";
+else =
+  print "different case";
+print format("%d %s %f", d["a"], d["b"], d["c"]);
+print format("%f", d["a"]);

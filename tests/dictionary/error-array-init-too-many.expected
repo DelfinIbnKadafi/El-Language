@@ -1,0 +1,2 @@
+error-array-init-too-many.ell (1) : Too many initial values for array 'u' of size 1
+exit=1

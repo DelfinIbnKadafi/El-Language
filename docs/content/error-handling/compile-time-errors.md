@@ -33,12 +33,17 @@ filename (line) : message
 | `Plugin "x" cannot add function 'f': ...` | A plugin function has the same name as a function already declared, or a name EL reserves. |
 | `Dictionary 'd' needs a key here, like d["key"]` | A dictionary was used as a single value. Read or write one of its entries instead. |
 | `A dictionary key must be a string, like d["name"]` | A dictionary key was written as a number, like `d[0]`. |
-| `A dictionary holds int, float and str values, not bool` | A `bool` was stored in a dictionary entry. |
-| `A dictionary cannot hold NONE` | `NONE` was stored in a dictionary entry. |
-| `A dictionary cannot be a function parameter` / `A dictionary cannot be returned from a function` | Dictionaries cannot be passed to or returned from functions. See [dict](content/dictionaries/dictionary.md). |
 | `'users' is an array of dictionaries: write the element number first, like users[0]["key"]` | An array of dictionaries was used with a key but no element number, like `users["name"]` instead of `users[0]["name"]`. |
 | `Variable 'users' is an array of dictionaries and must be indexed` | An array of dictionaries was used with nothing after it, like `print users;`. |
-| `A dictionary entry cannot be compared with NONE` | Use `has_key()` to ask whether a key exists. |
+| `To store the result of a comparison, put it in a bool variable first` | A comparison (`dict["key"] = a > b;`) was written as the value of an entry. Put it in a `bool` variable first. |
+| `Expected a dictionary (a dictionary variable, or a literal like {"key": value})` | Something that is not a dictionary was copied into a dictionary or passed as a dictionary parameter. |
+| `Expected : after the key` / `Expected , or }` | A dictionary literal is not written correctly, like `{"a" 1}` or `{"a": 1 "b": 2}`. |
+| `An array of dictionaries starts with {` / `Every element of an array of dictionaries is a dictionary written with { }` | Initial values of an array of dictionaries are not one `{...}` for each element. |
+| `Too many initial values for array 'users' of size 2` | More `{...}` were given than the array has elements. |
+| `A dictionary parameter cannot be an array` | A function parameter was written like `var dict d[3]`. |
+| `An element of an array of dictionaries cannot be returned directly` | `return users[0];`. Copy it into a dictionary variable first and return that. |
+| `Function 'f' returns a dictionary and cannot use a bare 'return;'` / `Function 'f' does not return a dictionary` | A function that returns a dictionary has a `return;` without a value, or a function that does not return one was used where a dictionary is wanted. |
+| `Function 'f' does not return a numeric/bool value` | A function that returns a dictionary was used in math or as a number. Use it like `var dict x = f();`. |
 | `'module' can only be used at the top level, not inside a function or a block` | `module` (or `library`) was used inside a function or a block. |
 
 ## Example

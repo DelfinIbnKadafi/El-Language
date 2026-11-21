@@ -1,0 +1,2 @@
+error-literal-not-key.ell (1) : A dictionary key must be a string, like "name"
+exit=1

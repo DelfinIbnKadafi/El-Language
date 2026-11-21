@@ -1,0 +1,3 @@
+var dict d = {"a": 1, "b": "text", "c": 2.5};
+if(d["b"] == 1) =
+  print 1;

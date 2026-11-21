@@ -1,0 +1,58 @@
+// bool and NONE values
+var dict d = {"on": true, "off": false, "nothing": NONE, "n": 5, "s": "text"};
+print d;
+d["flag"] = true;
+d["gone"] = NONE;
+var bool b = d["on"];
+print b;
+print d["off"];
+print d["nothing"];
+
+if(d["on"]) =
+  print "on is true";
+if(d["off"]) =
+  print "wrong";
+else =
+  print "off is false";
+if(not d["off"]) =
+  print "not off";
+if(d["on"] == true) =
+  print "on == true";
+if(d["off"] != true) =
+  print "off != true";
+if(d["on"] == d["flag"]) =
+  print "on == flag";
+if(d["n"]) =
+  print "non-zero number is true";
+
+if(d["nothing"] == NONE) =
+  print "nothing is NONE";
+if(d["n"] != NONE) =
+  print "n is not NONE";
+
+var int x = d["nothing"];
+if(x == NONE) =
+  print "x is NONE";
+var str t = d["nothing"];
+if(t == NONE) =
+  print "t is NONE";
+
+// store NONE from variables
+var int none_int;
+var str none_str;
+d["from_int"] = none_int;
+d["from_str"] = none_str;
+print d["from_int"];
+print d["from_str"];
+
+// has_key is true for NONE entries
+print has_key(d, "nothing");
+print len(d);
+
+// bool from has_key and comparison variables
+d["has_n"] = has_key(d, "n");
+var bool flag = true;
+d["f2"] = flag;
+print d["has_n"];
+print d["f2"];
+print format("%b %s %d", d["on"], d["nothing"], d["nothing"]);

@@ -1,0 +1,2 @@
+error-return-bare-in-dict-fn.ell (5) : Function 'f' returns a dictionary and cannot use a bare 'return;'
+exit=1

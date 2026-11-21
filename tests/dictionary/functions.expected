@@ -1,0 +1,19 @@
+{"name": "Bob", "age": 25, "tags": {"new": true}}
+26
+{"name": "Bob", "age": 25, "tags": {"new": true}}
+Bob (25)
+{"host": "localhost", "port": 3306, "opts": {"ssl": false}}
+3306
+{"name": "B", "age": 2, "tags": {"new": true}}
+A (1)
+2
+1
+{"name": "Temp", "age": 9, "tags": {"new": true}}
+Kid
+8
+Lit (4)
+Kid (3)
+2
+3
+{"v": 3}
+exit=0

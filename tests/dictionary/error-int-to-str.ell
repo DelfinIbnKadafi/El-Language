@@ -1,0 +1,2 @@
+var dict d = {"a": 1, "b": "text", "c": 2.5};
+var str s = d["a"];

@@ -1,0 +1,2 @@
+error-array-init-not-dict.ell (1) : Every element of an array of dictionaries is a dictionary written with { }
+exit=1

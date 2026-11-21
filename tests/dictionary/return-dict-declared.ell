@@ -1,0 +1,3 @@
+var dict d;
+function f() =
+  return d;

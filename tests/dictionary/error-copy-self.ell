@@ -1,0 +1,5 @@
+var dict d = {"a": 1, "in": {"z": 1}};
+d = d;
+d["in"] = d["in"];
+d["in"] = d;
+print d;

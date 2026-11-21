@@ -1,0 +1,2 @@
+error-missing-key.ell (2) : Key "zzz" not found in dictionary 'd'
+exit=1

@@ -1,0 +1,28 @@
+var dict d = {"age": 30, "pop": 1234567, "price": 2.5, "i": 1, "big": 100000};
+function twice(var int v) =
+  return v * 2;
+var int arr[4] = {10, 20, 30, 40};
+
+var int next = d["age"] + 1;
+print next;
+var int neg = -d["age"];
+print neg;
+print twice(d["age"] + 1);
+print arr[d["i"] + 1];
+print d["pop"] + 1;
+print d["big"] * 100;
+print d["pop"] * 1000;
+print d["price"] * 2;
+print d["price"] + 0.25;
+d["age"] = d["age"] + 1;
+d["half"] = d["age"] / 2;
+d["dbl"] = d["age"] * 2;
+d["sum"] = d["age"] + d["price"];
+d["age"] += d["i"];
+d["price"] += d["i"];
+print d;
+var int whole = d["dbl"];
+print whole;
+var float f = d["half"] + 0.5;
+print f;
+print format("%d %f %s", d["age"] + 1, d["price"] * 2, str(d["pop"] + 1));

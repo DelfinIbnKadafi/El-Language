@@ -1,0 +1,2 @@
+error-return-inconsistent.ell (5) : Function 'f' returns inconsistent types
+exit=1

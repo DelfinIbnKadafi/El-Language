@@ -1,0 +1,2 @@
+var dict d = {"a": 5, "s": "x", "n": NONE, "b": true, "in": {"z": 1}, "in2": {"z": 2}};
+d["b"] += 1;

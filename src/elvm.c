@@ -239,7 +239,7 @@ void RunBuiltin(int builtinId, FormatArgList* args, int line) {
       int index = (int) position.numberValue;
       
       if(position.isNone || index < 0 || index >= dict->count) {
-        printf("%s (%d) : Key position %d is out of range (the dictionary has %d keys)\n", LocationFile(line), LocationLine(line), (int) position.numberValue, dict->count);
+        printf("%s (%d) : Key position %d is out of range (the dictionary has %d key(s))\n", LocationFile(line), LocationLine(line), (int) position.numberValue, dict->count);
         exit(1);
       }
       
@@ -404,6 +404,13 @@ void FreeFormatArgList(FormatArgList* list) {
 // the result to a dynamically growing output buffer.
 void AppendFormattedArg(char** out, int* outCap, int* outLen, char specifier, FormatArg arg, int line) {
   char piece[64];
+  
+  // A dictionary entry that holds NONE: it was collected before the specifier
+  // was known, so it takes whatever type the specifier asks for
+  if(arg.type == VAR_NONE) {
+    arg.isNone = 1;
+    arg.type = specifier == 's' ? VAR_STR : specifier == 'b' ? VAR_BOOL : VAR_INT;
+  }
   
   if(specifier == 's') {
     if(arg.type != VAR_STR) {
@@ -1103,17 +1110,92 @@ typedef struct {
   VarType type;
   double number;
   char* string;
+  
+  // A copy of the dictionary, for a value that is a dictionary
+  Dict* dict;
 } DynValue;
 
 DynValue dynStack[MAX_DYN_STACK];
 int dynStackTop = 0;
 
+// Stack of references to dictionaries, see OP_DICT_REF_VAR. 'name' is what
+// the dictionary is called in error messages.
+#define MAX_DICT_REF_STACK 256
 
-// The dictionary an OP_DICT_* instruction works on. For an array of
-// dictionaries the element index is popped off the numeric stack, which
-// means this has to run after the instruction has popped everything else it
-// needs from that stack (the index was pushed before them).
-Dict* ResolveDict(Instruction* instruction, Variable** outVariable) {
+typedef struct {
+  Dict* dict;
+  
+  // True for a temporary dictionary that nobody else owns
+  int owned;
+  
+  char name[96];
+} DictRef;
+
+DictRef dictRefStack[MAX_DICT_REF_STACK];
+int dictRefTop = 0;
+
+// A temporary dictionary that was just popped off the reference stack. It is
+// freed the next time a dictionary is looked up, so the instruction that
+// popped it can still read it.
+Dict* pendingDictFree = NULL;
+
+void DictRefPush(Dict* dict, int owned, const char* name, int line) {
+  if(dictRefTop >= MAX_DICT_REF_STACK) {
+    printf("%s (%d) : Stack overflow: dictionary expression nesting too deep\n", LocationFile(line), LocationLine(line));
+    exit(1);
+  }
+  
+  DictRef* ref = &dictRefStack[dictRefTop++];
+  
+  ref->dict = dict;
+  ref->owned = owned;
+  snprintf(ref->name, sizeof(ref->name), "%s", name);
+}
+
+// Take the top reference off the stack. A temporary dictionary stays valid
+// until the next dictionary instruction.
+DictRef* DictRefPop() {
+  if(pendingDictFree != NULL) {
+    DictFree(pendingDictFree);
+    pendingDictFree = NULL;
+  }
+  
+  DictRef* ref = &dictRefStack[--dictRefTop];
+  
+  if(ref->owned) {
+    pendingDictFree = ref->dict;
+  }
+  
+  return ref;
+}
+
+// The dictionary an OP_DICT_* instruction works on, and in 'name' what to call
+// it in messages. For an array of dictionaries the element index is popped
+// off the numeric stack, which means this has to run after the instruction
+// has popped everything else it needs from that stack (the index was pushed
+// before them).
+Dict* ResolveDict(Instruction* instruction, const char** name) {
+  if(instruction->viaRef) {
+    if(instruction->keepRef) {
+      DictRef* top = &dictRefStack[dictRefTop - 1];
+      
+      *name = top->name;
+      
+      return top->dict;
+    }
+    
+    DictRef* ref = DictRefPop();
+    
+    *name = ref->name;
+    
+    return ref->dict;
+  }
+  
+  if(pendingDictFree != NULL) {
+    DictFree(pendingDictFree);
+    pendingDictFree = NULL;
+  }
+  
   Variable* v = ResolveVariable(instruction->varIndex, instruction->isLocal);
   int index = 0;
   
@@ -1121,9 +1203,7 @@ Dict* ResolveDict(Instruction* instruction, Variable** outVariable) {
     index = CheckBounds(Pop(), v->arraySize, instruction->line);
   }
   
-  if(outVariable != NULL) {
-    *outVariable = v;
-  }
+  *name = v->name;
   
   return v->dicts[index];
 }
@@ -1147,15 +1227,30 @@ const char* ResolveDictKey(Instruction* instruction) {
 }
 
 // Entry for 'key', stopping the program with an error if it does not exist
-DictEntry* RequireDictEntry(Instruction* instruction, Dict* dict, Variable* v, const char* key) {
+DictEntry* RequireDictEntry(Instruction* instruction, Dict* dict, const char* name, const char* key) {
   DictEntry* entry = DictFind(dict, key);
   
   if(entry == NULL) {
-    printf("%s (%d) : Key \"%s\" not found in dictionary '%s'\n", LocationFile(instruction->line), LocationLine(instruction->line), key, v->name);
+    printf("%s (%d) : Key \"%s\" not found in dictionary '%s'\n", LocationFile(instruction->line), LocationLine(instruction->line), key, name);
     exit(1);
   }
   
   return entry;
+}
+
+// Store a dictionary under 'key', or stop with an error if that would nest
+// dictionaries too deep
+void SetDictChildOrFail(Instruction* instruction, Dict* dict, const char* key, Dict* child) {
+  if(!DictSetChild(dict, key, child)) {
+    printf("%s (%d) : Dictionaries can only be nested %d levels deep\n", LocationFile(instruction->line), LocationLine(instruction->line), MAX_DICT_DEPTH);
+    exit(1);
+  }
+}
+
+// Stop with "Key "k" of dictionary 'd' holds a str, <what is needed>"
+void DictTypeError(Instruction* instruction, const char* key, const char* name, DictEntry* entry, const char* needed) {
+  printf("%s (%d) : Key \"%s\" of dictionary '%s' holds %s, %s\n", LocationFile(instruction->line), LocationLine(instruction->line), key, name, DictTypeNameWithArticle(entry->type), needed);
+  exit(1);
 }
 
 // Write a number the way print does: an int without decimals, a float as %g
@@ -1167,41 +1262,46 @@ void WriteDictNumber(DictEntry* entry, char* piece) {
   }
 }
 
-// Write a dictionary as text, like {"name": "Delfin", "age": 30}
-void PrintWholeDict(Dict* dict) {
+// Write text between double quotes, with " and \ and newlines escaped
+void WriteQuoted(const char* text) {
+  printf("\"");
+  
+  for(const char* c = text; *c != '\0'; c++) {
+    if(*c == '"' || *c == '\\') {
+      printf("\\%c", *c);
+    } else if(*c == '\n') {
+      printf("\\n");
+    } else {
+      printf("%c", *c);
+    }
+  }
+  
+  printf("\"");
+}
+
+// Write a dictionary as text, like {"name": "Delfin", "age": 30}, without a
+// new line at the end
+void WriteDictText(Dict* dict) {
   printf("{");
   
   for(int i = 0; i < dict->count; i++) {
     DictEntry* entry = &dict->entries[i];
     
-    printf("%s\"", i > 0 ? ", " : "");
-    
-    for(const char* c = entry->key; *c != '\0'; c++) {
-      if(*c == '"' || *c == '\\') {
-        printf("\\%c", *c);
-      } else if(*c == '\n') {
-        printf("\\n");
-      } else {
-        printf("%c", *c);
-      }
+    if(i > 0) {
+      printf(", ");
     }
     
-    printf("\": ");
+    WriteQuoted(entry->key);
+    printf(": ");
     
     if(entry->type == VAR_STR) {
-      printf("\"");
-      
-      for(const char* c = entry->string; *c != '\0'; c++) {
-        if(*c == '"' || *c == '\\') {
-          printf("\\%c", *c);
-        } else if(*c == '\n') {
-          printf("\\n");
-        } else {
-          printf("%c", *c);
-        }
-      }
-      
-      printf("\"");
+      WriteQuoted(entry->string);
+    } else if(entry->type == VAR_NONE) {
+      printf("NONE");
+    } else if(entry->type == VAR_BOOL) {
+      printf("%s", entry->number != 0 ? "true" : "false");
+    } else if(entry->type == VAR_DICT) {
+      WriteDictText(entry->child);
     } else {
       char piece[64];
       
@@ -1210,7 +1310,7 @@ void PrintWholeDict(Dict* dict) {
     }
   }
   
-  printf("}\n");
+  printf("}");
 }
 
 void VMRun(Instruction* code, int count, char* filename) {
@@ -1234,7 +1334,13 @@ void VMRun(Instruction* code, int count, char* filename) {
         if(instruction.propagateNone && lastPushedIsNone) {
           printf("NONE\n");
         } else if(instruction.valueType == VAR_FLOAT) {
-          printf("%g\n", value);
+          if(instruction.dictOp == 1 && value == floor(value) && value > -1e15 && value < 1e15) {
+            // Math on dictionary numbers: a whole result is written without
+            // exponent, like the int it most likely is
+            printf("%.0f\n", value == 0 ? 0.0 : value);
+          } else {
+            printf("%g\n", value);
+          }
         } else if(instruction.valueType == VAR_BOOL) {
           printf("%s\n", value != 0 ? "true" : "false");
         } else {
@@ -1937,8 +2043,15 @@ void VMRun(Instruction* code, int count, char* filename) {
         } else {
           double value = Pop();
           int isNone = instruction.propagateNone ? lastPushedIsNone : 0;
+          VarType argType = instruction.valueType;
           
-          PushFormatArg(instruction.valueType, value, isNone, NULL);
+          // Math on dictionary numbers is a float, but a whole result is
+          // given on as the int it most likely is
+          if(instruction.dictOp == 1 && argType == VAR_FLOAT && value == floor(value) && value >= -2147483648.0 && value <= 2147483647.0) {
+            argType = VAR_INT;
+          }
+          
+          PushFormatArg(argType, value, isNone, NULL);
         }
         break;
       }
@@ -1983,6 +2096,18 @@ void VMRun(Instruction* code, int count, char* filename) {
         v->isArray = instruction.isArray;
         v->arraySize = size;
         
+        // A function parameter: the dictionary the caller passed (a copy it
+        // made, on the reference stack) becomes this variable
+        if(instruction.sourceFromArgStack) {
+          DictRef* passed = &dictRefStack[--dictRefTop];
+          
+          v->dicts = calloc(1, sizeof(Dict*));
+          v->dicts[0] = passed->owned ? passed->dict : DictClone(passed->dict);
+          
+          variableCount++;
+          break;
+        }
+        
         CheckAllocationSize(size, sizeof(Dict*) + sizeof(Dict), instruction.line);
         
         v->dicts = calloc(size, sizeof(Dict*));
@@ -2001,11 +2126,23 @@ void VMRun(Instruction* code, int count, char* filename) {
       }
       case OP_DICT_SET_NUM: {
         double value = Pop();
+        int valueIsNone = instruction.propagateNone && lastPushedIsNone;
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
         
-        DictSetNumber(dict, key, instruction.valueType == VAR_INT ? VAR_INT : VAR_FLOAT, value);
+        if(valueIsNone) {
+          DictSetNone(dict, key);
+        } else if(instruction.valueType == VAR_BOOL) {
+          DictSetNumber(dict, key, VAR_BOOL, value != 0 ? 1 : 0);
+        } else if(instruction.valueType == VAR_INT) {
+          DictSetNumber(dict, key, VAR_INT, value);
+        } else if(instruction.dictOp == 1 && value == floor(value) && value >= -2147483648.0 && value <= 2147483647.0) {
+          // Math on dictionary numbers: a whole result is stored as an int
+          DictSetNumber(dict, key, VAR_INT, value);
+        } else {
+          DictSetNumber(dict, key, VAR_FLOAT, value);
+        }
         break;
       }
       case OP_DICT_SET_STR: {
@@ -2014,70 +2151,123 @@ void VMRun(Instruction* code, int count, char* filename) {
         int valueIsNone = stringValueStackIsNone[stringValueStackTop];
         char* value = stringValueStack[stringValueStackTop];
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
         
         if(valueIsNone) {
-          printf("%s (%d) : A dictionary cannot hold NONE as a value\n", LocationFile(instruction.line), LocationLine(instruction.line));
-          exit(1);
+          DictSetNone(dict, key);
+        } else {
+          DictSetString(dict, key, value);
         }
+        break;
+      }
+      case OP_DICT_SET_NONE: {
+        const char* key = ResolveDictKey(&instruction);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
         
-        DictSetString(dict, key, value);
+        DictSetNone(dict, key);
+        break;
+      }
+      case OP_DICT_SET_NEWDICT: {
+        const char* key = ResolveDictKey(&instruction);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        
+        SetDictChildOrFail(&instruction, dict, key, DictCreate());
         break;
       }
       case OP_DICT_GET_NUM:
       case OP_DICT_GET_STR: {
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
-        DictEntry* entry = RequireDictEntry(&instruction, dict, v, key);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        DictEntry* entry = RequireDictEntry(&instruction, dict, name, key);
         
         if(instruction.opcode == OP_DICT_GET_STR) {
+          if(entry->type == VAR_NONE) {
+            PushStringValue("");
+            stringValueStackIsNone[stringValueStackTop - 1] = 1;
+            break;
+          }
+          
           if(entry->type != VAR_STR) {
-            printf("%s (%d) : Key \"%s\" of dictionary '%s' holds %s %s, not a str\n", LocationFile(instruction.line), LocationLine(instruction.line), key, v->name, entry->type == VAR_INT ? "an" : "a", DictTypeName(entry->type));
-            exit(1);
+            DictTypeError(&instruction, key, name, entry, "not a str");
           }
           
           PushStringValue(entry->string);
           stringValueStackIsNone[stringValueStackTop - 1] = 0;
-        } else {
-          if(entry->type == VAR_STR) {
-            printf("%s (%d) : Key \"%s\" of dictionary '%s' holds a str, not a number\n", LocationFile(instruction.line), LocationLine(instruction.line), key, v->name);
+          break;
+        }
+        
+        if(entry->type == VAR_NONE) {
+          Push(0);
+          lastPushedIsNone = 1;
+          break;
+        }
+        
+        if(instruction.valueType == VAR_BOOL) {
+          if(entry->type == VAR_BOOL) {
+            Push(entry->number);
+          } else if((entry->type == VAR_INT || entry->type == VAR_FLOAT) && instruction.dictOp == 1) {
+            Push(entry->number != 0 ? 1 : 0);
+          } else {
+            DictTypeError(&instruction, key, name, entry, "not a bool");
+          }
+          
+          lastPushedIsNone = 0;
+          break;
+        }
+        
+        if(entry->type != VAR_INT && entry->type != VAR_FLOAT) {
+          DictTypeError(&instruction, key, name, entry, "not a number");
+        }
+        
+        if(instruction.valueType == VAR_INT) {
+          if(entry->type == VAR_FLOAT && entry->number != floor(entry->number)) {
+            printf("%s (%d) : Key \"%s\" of dictionary '%s' holds the float %g, which is not a whole number\n", LocationFile(instruction.line), LocationLine(instruction.line), key, name, entry->number);
             exit(1);
           }
           
-          if(instruction.valueType == VAR_INT) {
-            if(entry->type == VAR_FLOAT && entry->number != floor(entry->number)) {
-              printf("%s (%d) : Key \"%s\" of dictionary '%s' holds the float %g, which is not a whole number\n", LocationFile(instruction.line), LocationLine(instruction.line), key, v->name, entry->number);
-              exit(1);
-            }
-            
-            if(entry->number < -2147483648.0 || entry->number > 2147483647.0) {
-              printf("%s (%d) : Key \"%s\" of dictionary '%s' holds %g, which does not fit in an int\n", LocationFile(instruction.line), LocationLine(instruction.line), key, v->name, entry->number);
-              exit(1);
-            }
+          if(entry->number < -2147483648.0 || entry->number > 2147483647.0) {
+            printf("%s (%d) : Key \"%s\" of dictionary '%s' holds %g, which does not fit in an int\n", LocationFile(instruction.line), LocationLine(instruction.line), key, name, entry->number);
+            exit(1);
           }
-          
-          Push(entry->number);
-          lastPushedIsNone = 0;
         }
+        
+        Push(entry->number);
+        lastPushedIsNone = 0;
+        break;
+      }
+      case OP_DICT_IS_NONE: {
+        const char* key = ResolveDictKey(&instruction);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        DictEntry* entry = RequireDictEntry(&instruction, dict, name, key);
+        int isNone = entry->type == VAR_NONE;
+        
+        Push((instruction.dictOp == 0 ? isNone : !isNone) ? 1 : 0);
+        lastPushedIsNone = 0;
         break;
       }
       case OP_DICT_UPDATE: {
         double amount = Pop();
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
-        DictEntry* entry = RequireDictEntry(&instruction, dict, v, key);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        DictEntry* entry = RequireDictEntry(&instruction, dict, name, key);
         
-        if(entry->type == VAR_STR) {
-          printf("%s (%d) : Key \"%s\" of dictionary '%s' holds a str, so + and - cannot be used on it\n", LocationFile(instruction.line), LocationLine(instruction.line), key, v->name);
+        if(entry->type != VAR_INT && entry->type != VAR_FLOAT) {
+          printf("%s (%d) : Key \"%s\" of dictionary '%s' holds %s, so + and - cannot be used on it\n", LocationFile(instruction.line), LocationLine(instruction.line), key, name, DictTypeNameWithArticle(entry->type));
           exit(1);
         }
         
-        entry->number = instruction.dictOp == 0 ? entry->number + amount : entry->number - amount;
+        entry->number = (instruction.dictOp & 1) == 0 ? entry->number + amount : entry->number - amount;
         
-        if(entry->type == VAR_INT && instruction.valueType != VAR_INT) {
+        int amountIsInt = instruction.valueType == VAR_INT ||
+                          ((instruction.dictOp & 2) && amount == floor(amount));
+        
+        if(entry->type == VAR_INT && !amountIsInt) {
           entry->type = VAR_FLOAT;
         }
         break;
@@ -2085,14 +2275,25 @@ void VMRun(Instruction* code, int count, char* filename) {
       case OP_DICT_PRINT_VALUE:
       case OP_DICT_FORMAT_ARG: {
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
-        DictEntry* entry = RequireDictEntry(&instruction, dict, v, key);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        DictEntry* entry = RequireDictEntry(&instruction, dict, name, key);
         
         if(instruction.opcode == OP_DICT_FORMAT_ARG) {
+          if(entry->type == VAR_DICT) {
+            DictTypeError(&instruction, key, name, entry, "which format() cannot use");
+          }
+          
           PushFormatArg(entry->type, entry->number, 0, entry->type == VAR_STR ? entry->string : NULL);
         } else if(entry->type == VAR_STR) {
           printf("%s\n", entry->string);
+        } else if(entry->type == VAR_NONE) {
+          printf("NONE\n");
+        } else if(entry->type == VAR_BOOL) {
+          printf("%s\n", entry->number != 0 ? "true" : "false");
+        } else if(entry->type == VAR_DICT) {
+          WriteDictText(entry->child);
+          printf("\n");
         } else {
           char piece[64];
           
@@ -2102,17 +2303,26 @@ void VMRun(Instruction* code, int count, char* filename) {
         break;
       }
       case OP_DICT_PRINT_ALL: {
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
         
-        PrintWholeDict(dict);
+        WriteDictText(dict);
+        printf("\n");
+        break;
+      }
+      case OP_DICT_REF_ARG: {
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        
+        PushFormatArg(VAR_DICT, 0, 0, NULL);
+        formatArgListStack[formatArgListTop - 1].args[formatArgListStack[formatArgListTop - 1].count - 1].dict = dict;
         break;
       }
       case OP_DICT_GET_DYN: {
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
-        DictEntry* entry = RequireDictEntry(&instruction, dict, v, key);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        DictEntry* entry = RequireDictEntry(&instruction, dict, name, key);
         
         if(dynStackTop >= MAX_DYN_STACK) {
           printf("%s (%d) : Stack overflow: expression nesting too deep\n", LocationFile(instruction.line), LocationLine(instruction.line));
@@ -2122,54 +2332,81 @@ void VMRun(Instruction* code, int count, char* filename) {
         dynStack[dynStackTop].type = entry->type;
         dynStack[dynStackTop].number = entry->number;
         dynStack[dynStackTop].string = entry->type == VAR_STR ? DupString(entry->string) : NULL;
+        dynStack[dynStackTop].dict = entry->type == VAR_DICT ? DictClone(entry->child) : NULL;
         dynStackTop++;
         break;
       }
       case OP_DICT_SET_DYN: {
         DynValue value = dynStack[--dynStackTop];
         const char* key = ResolveDictKey(&instruction);
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
         
         if(value.type == VAR_STR) {
           DictSetString(dict, key, value.string);
+        } else if(value.type == VAR_NONE) {
+          DictSetNone(dict, key);
+        } else if(value.type == VAR_DICT) {
+          SetDictChildOrFail(&instruction, dict, key, value.dict);
+          value.dict = NULL;
         } else {
           DictSetNumber(dict, key, value.type, value.number);
         }
         
         free(value.string);
+        DictFree(value.dict);
         break;
       }
       case OP_DICT_CMP: {
         DynValue rhs = dynStack[--dynStackTop];
         DynValue lhs = dynStack[--dynStackTop];
         int result = 0;
+        int op = instruction.dictOp;
         
-        if((lhs.type == VAR_STR) != (rhs.type == VAR_STR)) {
-          printf("%s (%d) : Cannot compare %s %s with %s %s\n", LocationFile(instruction.line), LocationLine(instruction.line), lhs.type == VAR_INT ? "an" : "a", DictTypeName(lhs.type), rhs.type == VAR_INT ? "an" : "a", DictTypeName(rhs.type));
+        // The kinds of value that can be compared with each other: text,
+        // numbers (int and float), bools, NONE
+        int lhsKind = lhs.type == VAR_FLOAT ? VAR_INT : lhs.type;
+        int rhsKind = rhs.type == VAR_FLOAT ? VAR_INT : rhs.type;
+        
+        if(lhs.type == VAR_DICT || rhs.type == VAR_DICT) {
+          printf("%s (%d) : Dictionaries cannot be compared\n", LocationFile(instruction.line), LocationLine(instruction.line));
           exit(1);
         }
         
-        if(lhs.type == VAR_STR) {
-          if(instruction.dictOp > 1) {
+        if(lhsKind == VAR_NONE || rhsKind == VAR_NONE) {
+          if(op > 1) {
+            printf("%s (%d) : NONE can only be compared with == or !=\n", LocationFile(instruction.line), LocationLine(instruction.line));
+            exit(1);
+          }
+          
+          result = lhsKind == rhsKind;
+          
+          if(op == 1) {
+            result = !result;
+          }
+        } else if(lhsKind != rhsKind) {
+          printf("%s (%d) : Cannot compare %s with %s\n", LocationFile(instruction.line), LocationLine(instruction.line), DictTypeNameWithArticle(lhs.type), DictTypeNameWithArticle(rhs.type));
+          exit(1);
+        } else if(lhs.type == VAR_STR) {
+          if(op > 1) {
             printf("%s (%d) : Strings can only be compared with == or !=\n", LocationFile(instruction.line), LocationLine(instruction.line));
             exit(1);
           }
           
           result = strcmp(lhs.string, rhs.string) == 0;
           
-          if(instruction.dictOp == 1) {
+          if(op == 1) {
             result = !result;
           }
-        } else if(instruction.dictOp == 0) {
+        } else if(op == 0) {
           result = lhs.number == rhs.number;
-        } else if(instruction.dictOp == 1) {
+        } else if(op == 1) {
           result = lhs.number != rhs.number;
-        } else if(instruction.dictOp == 2) {
+        } else if(op == 2) {
           result = lhs.number > rhs.number;
-        } else if(instruction.dictOp == 3) {
+        } else if(op == 3) {
           result = lhs.number < rhs.number;
-        } else if(instruction.dictOp == 4) {
+        } else if(op == 4) {
           result = lhs.number >= rhs.number;
         } else {
           result = lhs.number <= rhs.number;
@@ -2182,12 +2419,136 @@ void VMRun(Instruction* code, int count, char* filename) {
         lastPushedIsNone = 0;
         break;
       }
-      case OP_DICT_REF_ARG: {
-        Variable* v;
-        Dict* dict = ResolveDict(&instruction, &v);
+      case OP_DICT_REF_VAR: {
+        Variable* v = ResolveVariable(instruction.varIndex, instruction.isLocal);
+        int index = 0;
         
-        PushFormatArg(VAR_DICT, 0, 0, NULL);
-        formatArgListStack[formatArgListTop - 1].args[formatArgListStack[formatArgListTop - 1].count - 1].dict = dict;
+        if(instruction.destIsArray) {
+          index = CheckBounds(Pop(), v->arraySize, instruction.line);
+        }
+        
+        DictRefPush(v->dicts[index], 0, v->name, instruction.line);
+        break;
+      }
+      case OP_DICT_REF_CHILD: {
+        const char* key = ResolveDictKey(&instruction);
+        const char* parentNameText;
+        Dict* parentDict = ResolveDict(&instruction, &parentNameText);
+        char parentName[96];
+        
+        snprintf(parentName, sizeof(parentName), "%s", parentNameText);
+        
+        DictEntry* entry = RequireDictEntry(&instruction, parentDict, parentName, key);
+        
+        if(entry->type != VAR_DICT) {
+          DictTypeError(&instruction, key, parentName, entry, "not a dictionary");
+        }
+        
+        char childName[512];
+        
+        snprintf(childName, sizeof(childName), "%s[\"%s\"]", parentName, key);
+        
+        DictRefPush(entry->child, 0, childName, instruction.line);
+        break;
+      }
+      case OP_DICT_SET_COPY: {
+        DictRef* sourceRef = DictRefPop();
+        Dict* source = sourceRef->dict;
+        int sourceOwned = sourceRef->owned;
+        
+        // The temporary source is moved in below, not freed
+        if(sourceOwned) {
+          pendingDictFree = NULL;
+        }
+        
+        const char* key = ResolveDictKey(&instruction);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        
+        // The copy is made before the key is replaced: the source can be the
+        // entry that is about to be overwritten
+        SetDictChildOrFail(&instruction, dict, key, sourceOwned ? source : DictClone(source));
+        break;
+      }
+      case OP_DICT_LEN_ENTRY: {
+        const char* key = ResolveDictKey(&instruction);
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        DictEntry* entry = RequireDictEntry(&instruction, dict, name, key);
+        
+        if(entry->type == VAR_STR) {
+          Push((double) strlen(entry->string));
+        } else if(entry->type == VAR_DICT) {
+          Push((double) entry->child->count);
+        } else {
+          DictTypeError(&instruction, key, name, entry, "not a str or a dict, so len() cannot be used on it");
+        }
+        
+        lastPushedIsNone = 0;
+        break;
+      }
+      case OP_DICT_REF_NEW: {
+        DictRefPush(DictCreate(), 1, "dictionary", instruction.line);
+        break;
+      }
+      case OP_DICT_REF_CLONE: {
+        DictRef* top = &dictRefStack[dictRefTop - 1];
+        
+        if(!top->owned) {
+          top->dict = DictClone(top->dict);
+          top->owned = 1;
+        }
+        break;
+      }
+      case OP_DICT_REF_POP: {
+        DictRefPop();
+        break;
+      }
+      case OP_DICT_COPY: {
+        DictRef* source = DictRefPop();
+        Dict* sourceDict = source->dict;
+        int sourceOwned = source->owned;
+        
+        // The source dictionary is read below, so the free that DictRefPop
+        // queued for a temporary one has to wait: take it over here
+        if(sourceOwned) {
+          pendingDictFree = NULL;
+        }
+        
+        DictRef* dest = DictRefPop();
+        
+        DictCopyInto(dest->dict, sourceDict);
+        
+        if(sourceOwned) {
+          DictFree(sourceDict);
+        }
+        break;
+      }
+      case OP_DICT_CLEAR: {
+        const char* name;
+        Dict* dict = ResolveDict(&instruction, &name);
+        
+        DictClear(dict);
+        break;
+      }
+      case OP_NUM_TO_INT_CHECKED: {
+        double value = Pop();
+        int wasNone = lastPushedIsNone;
+        
+        if(!wasNone) {
+          if(value != floor(value)) {
+            printf("%s (%d) : The value %g is not a whole number, so it cannot be used as an int\n", LocationFile(instruction.line), LocationLine(instruction.line), value);
+            exit(1);
+          }
+          
+          if(value < -2147483648.0 || value > 2147483647.0) {
+            printf("%s (%d) : The value %g does not fit in an int\n", LocationFile(instruction.line), LocationLine(instruction.line), value);
+            exit(1);
+          }
+        }
+        
+        Push(value);
+        lastPushedIsNone = wasNone;
         break;
       }
       case OP_CALL_NATIVE: {

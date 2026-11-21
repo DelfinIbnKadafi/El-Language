@@ -1,0 +1,21 @@
+{"host": "localhost", "port": 3306, "ratio": 0.75, "name": "db"}
+3307
+1.5
+0: Alice is 30
+1: Bob is 25
+2: Cara is 41
+31
+40
+3.5
+{"name": "Alice", "age": 30, "score": 3.5}
+Cara
+{"name": "Cara", "age": 40, "city": "Jakarta"}
+port ok
+port below 4000
+host ok
+host not remote
+alice is younger
+names differ
+same name
+math in condition
+exit=0

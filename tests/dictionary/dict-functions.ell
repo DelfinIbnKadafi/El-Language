@@ -1,0 +1,19 @@
+var dict p = {"age": 30};
+var float f = p["age"];
+print f;
+var dict users[3];
+users[0]["name"] = "Alice";
+users[0]["age"] = 30;
+print len(users);
+print len(users[0]);
+print len(users[1]);
+print has_key(users[0], "name");
+print has_key(users[1], "name");
+print key_at(users[0], 1);
+print len(users[0]["name"]);
+var bool found = has_key(p, "age");
+print found;
+if(has_key(p, "age") and p["age"] > 18) =
+  print "adult with age";
+if(not has_key(p, "zzz")) =
+  print "no zzz";

@@ -1,0 +1,5 @@
+function f() =
+  return 5;
+var dict d;
+d["k"] = f();
+print d;

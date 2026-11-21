@@ -1,0 +1,20 @@
+{"f1": 8, "f2": "ABC", "f3": 5, "f4": 7, "f5": "Q", "f6": -5, "f7": -5, "f8": 12, "f9": 2.5, "f10": 2.5, "f11": "5-x"}
+lit == entry
+var == entry
+entry == var
+num == entry
+var < entry
+entry > var
+and ok
+or ok
+parens ok
+not ok
+ne ok
+negative
+math eq
+math both
+tag ok
+different case
+5 x 2.5
+5
+exit=0

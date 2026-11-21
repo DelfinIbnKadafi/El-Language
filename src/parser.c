@@ -268,7 +268,7 @@ int CanUseCallAsScalarValue(int funcIndex, int line) {
   FunctionSymbol* func = &functionSymbols[funcIndex];
   
   if(func->hasReturnValue) {
-    return !func->returnsArray && func->returnType != VAR_STR;
+    return !func->returnsArray && func->returnType != VAR_STR && func->returnType != VAR_DICT;
   }
   
   if(funcIndex != currentFunctionIndex) {
@@ -344,6 +344,12 @@ typedef struct {
   // can still take it with a check when the program runs -- see
   // AdaptDictReadToInt.
   int dictBare;
+  
+  // True if a dictionary number went into this expression (dict["a"] + 1).
+  // Such a result is a float because the compiler does not know the type of
+  // the entry, but a spot that needs an int takes it if it is a whole number
+  // when the program runs, and a dictionary stores it as an int if it is whole.
+  int fromDict;
 } ExprResult;
 
 // Result of parsing a string value: lookahead token, literal text, and source variable
@@ -416,6 +422,7 @@ void EmitPushStringValue(StringResult value, int line);
 int LooksLikeGeneralStringValue(Token token);
 CondResult ParseGeneralStringComparison(Token token);
 CondResult ParseDictComparison(Token token);
+Token ParseDictSourceRef(Token token, int line);
 CondResult ParseAndExprTail(CondResult left);
 CondResult ParseOrExprTail(CondResult left);
 Token ParseStatement(Token token);
@@ -441,27 +448,38 @@ Token ParseScanDestinationList(char* label, char* specifiers, int specifierCount
 Token ParseSscanfStatement(Token nameToken);
 Token ParseSplitStatement(Token nameToken);
 
-// If 'value' is one dictionary entry read as a number (dict["age"]), turn the
-// read into one that has to find a whole number, and make 'value' an int.
-// Returns 1 if that was done. This is what lets "var int a = dict["age"];"
-// work although the compiler does not know the entry's type: the program
-// checks it when it runs.
+// If 'value' is a number that came out of dictionary math (dict["age"], or
+// dict["age"] + 1), make it an int. The compiler does not know the type of a
+// dictionary entry, so such a number is a float; this makes the program check
+// that it is a whole number inside the int range when it runs. Returns 1 if
+// that was done. This is what lets "var int a = dict["age"];" work.
 int AdaptDictReadToInt(ExprResult* value) {
-  if(value->dictBare && value->type == VAR_FLOAT && bytecodeCount > 0 &&
-     bytecode[bytecodeCount - 1].opcode == OP_DICT_GET_NUM) {
-    bytecode[bytecodeCount - 1].valueType = VAR_INT;
-    
-    value->type = VAR_INT;
-    value->dictBare = 0;
-    
-    return 1;
+  if(!value->fromDict || value->type != VAR_FLOAT) {
+    return 0;
   }
   
-  return 0;
+  if(value->dictBare && bytecodeCount > 0 && bytecode[bytecodeCount - 1].opcode == OP_DICT_GET_NUM) {
+    // A single entry: the read itself does the check
+    bytecode[bytecodeCount - 1].valueType = VAR_INT;
+  } else {
+    Instruction check = {0};
+    
+    check.opcode = OP_NUM_TO_INT_CHECKED;
+    check.line = value->next.line;
+    
+    EmitInstruction(check);
+  }
+  
+  value->type = VAR_INT;
+  value->dictBare = 0;
+  value->fromDict = 0;
+  
+  return 1;
 }
 
 // A reference to a dictionary, or to one entry of it: name, then (for an
-// array of dictionaries) the element index, then optionally ["key"].
+// array of dictionaries) the element index, then any number of ["key"]. In
+// dict["a"]["b"], "a" holds a dictionary and "b" is the entry that is meant.
 typedef struct {
   // Symbol of the dictionary variable
   int symIndex;
@@ -469,11 +487,17 @@ typedef struct {
   // True if a key followed, as in dict["key"], false for the whole dictionary
   int hasKey;
   
-  // The key when it was written as a string literal. Otherwise NULL and
-  // keyFromStack is set: the key is an expression, already evaluated onto
+  // The (last) key when it was written as a string literal. Otherwise NULL
+  // and keyFromStack is set: the key is an expression, already evaluated onto
   // the string-value stack.
   char* keyLiteral;
   int keyFromStack;
+  
+  // The dictionary the key belongs to is on the dictionary reference stack
+  // (a dictionary inside another one, or a whole dictionary that was made
+  // into a reference) and not in the variable. keepRef: leave it there.
+  int viaRef;
+  int keepRef;
   
   // Lookahead token after the reference
   Token next;
@@ -481,12 +505,15 @@ typedef struct {
 
 // Parse a reference to the dictionary variable 'nameToken' ('afterName' is
 // the token already read after it). Emits the code for the element index and
-// the key, leaving them on the numeric and string-value stacks for the
-// dictionary instruction that the caller emits next (see MakeDictInstruction).
+// the keys, leaving the last key on the string-value stack (unless it is a
+// literal) for the dictionary instruction that the caller emits next (see
+// MakeDictInstruction). Keys before the last one go into dictionaries inside
+// dictionaries, those are followed right away with reference instructions.
 DictAccess ParseDictAccess(Token nameToken, Token afterName) {
   DictAccess access = {0};
   int index = FindSymbol(nameToken.value);
   Token token = afterName;
+  int navigated = 0;
   
   access.symIndex = index;
   
@@ -516,8 +543,10 @@ DictAccess ParseDictAccess(Token nameToken, Token afterName) {
     token = LexerNext();
   }
   
-  if(token.type == TOKEN_LBRACKET) {
+  while(token.type == TOKEN_LBRACKET) {
     Token keyToken = LexerNext();
+    char* literal = NULL;
+    int fromStack = 0;
     Token afterKey;
     
     if(keyToken.type == TOKEN_LIT_NUMBER || keyToken.type == TOKEN_LIT_FLOAT) {
@@ -525,14 +554,14 @@ DictAccess ParseDictAccess(Token nameToken, Token afterName) {
     }
     
     if(keyToken.type == TOKEN_LIT_STRING) {
-      access.keyLiteral = keyToken.value;
+      literal = keyToken.value;
       afterKey = LexerNext();
     } else {
       StringResult key = ParseStringValue(keyToken);
       
       EmitPushStringValue(key, keyToken.line);
       
-      access.keyFromStack = 1;
+      fromStack = 1;
       afterKey = key.next;
     }
     
@@ -540,13 +569,85 @@ DictAccess ParseDictAccess(Token nameToken, Token afterName) {
       CompileError(afterKey.line, "Expected ]");
     }
     
+    Token following = LexerNext();
+    
+    if(following.type == TOKEN_LBRACKET) {
+      // This key holds a dictionary, and the next key is looked up in it
+      if(!navigated) {
+        Instruction base = {0};
+        
+        base.opcode = OP_DICT_REF_VAR;
+        base.varIndex = index;
+        base.isLocal = symbols[index].isLocal;
+        base.destIsArray = symbols[index].isArray;
+        base.line = nameToken.line;
+        
+        EmitInstruction(base);
+        
+        navigated = 1;
+      }
+      
+      Instruction child = {0};
+      
+      child.opcode = OP_DICT_REF_CHILD;
+      child.viaRef = 1;
+      child.stringLiteral = literal;
+      child.keyFromStack = fromStack;
+      child.line = keyToken.line;
+      
+      EmitInstruction(child);
+      
+      token = following;
+      continue;
+    }
+    
     access.hasKey = 1;
-    access.next = LexerNext();
-  } else {
-    access.next = token;
+    access.keyLiteral = literal;
+    access.keyFromStack = fromStack;
+    access.viaRef = navigated;
+    access.next = following;
+    
+    return access;
   }
   
+  access.next = token;
+  
   return access;
+}
+
+// Make 'access' a reference on the dictionary reference stack, if it is not
+// one yet. If it has a key, that key has to hold a dictionary, and the
+// reference is to that dictionary. This is for the places that take a whole
+// dictionary: len(), has_key(), print, copying.
+void DictAccessToRef(DictAccess* access, int line) {
+  if(!access->viaRef) {
+    Instruction base = {0};
+    
+    base.opcode = OP_DICT_REF_VAR;
+    base.varIndex = access->symIndex;
+    base.isLocal = symbols[access->symIndex].isLocal;
+    base.destIsArray = symbols[access->symIndex].isArray;
+    base.line = line;
+    
+    EmitInstruction(base);
+  }
+  
+  if(access->hasKey) {
+    Instruction child = {0};
+    
+    child.opcode = OP_DICT_REF_CHILD;
+    child.viaRef = 1;
+    child.stringLiteral = access->keyLiteral;
+    child.keyFromStack = access->keyFromStack;
+    child.line = line;
+    
+    EmitInstruction(child);
+  }
+  
+  access->viaRef = 1;
+  access->hasKey = 0;
+  access->keyLiteral = NULL;
+  access->keyFromStack = 0;
 }
 
 // An OP_DICT_* instruction aimed at the dictionary (and key) of 'access'
@@ -554,11 +655,18 @@ Instruction MakeDictInstruction(Opcode opcode, DictAccess* access, int line) {
   Instruction instruction = {0};
   
   instruction.opcode = opcode;
-  instruction.varIndex = access->symIndex;
-  instruction.isLocal = symbols[access->symIndex].isLocal;
-  instruction.destIsArray = symbols[access->symIndex].isArray;
+  
+  // Through a reference the dictionary is not named by a variable
+  if(!access->viaRef) {
+    instruction.varIndex = access->symIndex;
+    instruction.isLocal = symbols[access->symIndex].isLocal;
+    instruction.destIsArray = symbols[access->symIndex].isArray;
+  }
+  
   instruction.stringLiteral = access->keyLiteral;
   instruction.keyFromStack = access->keyFromStack;
+  instruction.viaRef = access->viaRef;
+  instruction.keepRef = access->keepRef;
   instruction.line = line;
   
   return instruction;
@@ -837,6 +945,16 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
       
       if(func->paramIsArray[argIndex]) {
         token = ParseArrayArgument(func, argIndex, nameToken, token);
+      } else if(paramType == VAR_DICT) {
+        // A dictionary is passed by value: the function gets a copy
+        token = ParseDictSourceRef(token, nameToken.line);
+        
+        Instruction clone = {0};
+        
+        clone.opcode = OP_DICT_REF_CLONE;
+        clone.line = nameToken.line;
+        
+        EmitInstruction(clone);
       } else if(paramType == VAR_STR) {
         StringResult value = ParseStringValue(token);
         
@@ -882,7 +1000,8 @@ FunctionCallResult ParseFunctionCallArgs(int funcIndex, Token nameToken) {
         int isBare = paramType != VAR_STR && valueEnd > valueStart &&
           (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
            bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-           bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+           bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
         
         Instruction argInstr = {0};
         
@@ -1063,6 +1182,7 @@ ExprResult ParseNumericIdentifier(Token token, Token afterName) {
     result.next = access.next;
     result.type = VAR_FLOAT;
     result.dictBare = 1;
+    result.fromDict = 1;
     
     return result;
   }
@@ -1114,6 +1234,7 @@ ExprResult ParseNumericFactor(Token token) {
     
     result.type = inner.type;
     result.next = inner.next;
+    result.fromDict = inner.fromDict;
     
     return result;
   }
@@ -1215,6 +1336,7 @@ ExprResult ParseNumericTermTail(ExprResult left) {
     left.type = (left.type == VAR_FLOAT || right.type == VAR_FLOAT) ? VAR_FLOAT : VAR_INT;
     left.next = right.next;
     left.dictBare = 0;
+    left.fromDict = left.fromDict || right.fromDict;
   }
   
   return left;
@@ -1242,6 +1364,7 @@ ExprResult ParseNumericExpressionTail(ExprResult left) {
     left.type = (left.type == VAR_FLOAT || right.type == VAR_FLOAT) ? VAR_FLOAT : VAR_INT;
     left.next = right.next;
     left.dictBare = 0;
+    left.fromDict = left.fromDict || right.fromDict;
   }
   
   return left;
@@ -1540,8 +1663,21 @@ BoolResult ParseBoolIdentifier(Token token, Token afterName) {
     CompileError(token.line, "Undefined symbol \"%s\"", token.value);
   }
   
+  // dict["key"] as a bool: the entry has to hold a bool
   if(symbols[index].type == VAR_DICT) {
-    CompileError(token.line, "A dictionary entry cannot be used as a bool, dictionaries hold int, float and str values");
+    DictAccess access = ParseDictAccess(token, afterName);
+    
+    RequireDictKey(&access, token);
+    
+    Instruction get = MakeDictInstruction(OP_DICT_GET_NUM, &access, token.line);
+    
+    get.valueType = VAR_BOOL;
+    
+    EmitInstruction(get);
+    
+    result.next = access.next;
+    
+    return result;
   }
   
   if(symbols[index].type != VAR_BOOL) {
@@ -1756,6 +1892,7 @@ int LooksLikeGeneralStringValue(Token token) {
 VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
   VarType type;
   int line = token.line;
+  int dictMath = 0;
   int valueStart = bytecodeCount;
   
   if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT || token.type == TOKEN_TYPE_STR) {
@@ -1825,12 +1962,14 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
       
       value.next = access.next;
       value.type = VAR_FLOAT;
+      value.fromDict = 1;
       
       value = ParseNumericTermTail(value);
       value = ParseNumericExpressionTail(value);
       
       *outNext = value.next;
       type = value.type;
+      dictMath = value.fromDict && value.type == VAR_FLOAT;
     } else if(isStringSymbol) {
       StringResult value = ParseStringIdentifier(token, afterName);
       
@@ -1866,13 +2005,15 @@ VarType ParseAndEmitFormatArgument(Token token, Token* outNext) {
   int isBare = type != VAR_STR && valueEnd > valueStart &&
     (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
      bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
   
   Instruction argInstr = {0};
   
   argInstr.opcode = OP_FORMAT_ARG;
   argInstr.valueType = type;
   argInstr.propagateNone = isBare;
+  argInstr.dictOp = dictMath;
   argInstr.line = line;
   
   EmitInstruction(argInstr);
@@ -1921,9 +2062,8 @@ BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken) {
       
       DictAccess access = ParseDictAccess(token, LexerNext());
       
-      if(access.hasKey) {
-        CompileError(token.line, "%s() needs the whole dictionary, not one of its entries", def->name);
-      }
+      // A whole dictionary, or an entry that holds a dictionary
+      DictAccessToRef(&access, nameToken.line);
       
       EmitInstruction(MakeDictInstruction(OP_DICT_REF_ARG, &access, nameToken.line));
       
@@ -1960,7 +2100,8 @@ BuiltinCallResult ParseBuiltinCall(int builtinIndex, Token nameToken) {
       int isBare = argType != VAR_STR && valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
          bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
       
       Instruction argInstr = {0};
       
@@ -2047,42 +2188,37 @@ ExprResult ParseLenOfString(StringResult value, int line) {
 // a str variable, an indexed str array element, a string-returning call,
 // etc.) falls back to measuring the string's actual length at runtime.
 // len() of a dictionary: the number of keys it has. len(dict["key"]) is the
-// length of the text that entry holds, like len() of any other string.
-// 'argToken' is the dictionary's name and 'afterArg' the token after it.
+// length of the text that entry holds, or the number of keys if it holds a
+// dictionary. 'argToken' is the dictionary's name and 'afterArg' the token
+// after it.
 ExprResult ParseDictLen(Token argToken, Token afterArg, int line) {
   DictAccess access = ParseDictAccess(argToken, afterArg);
-  
-  if(access.hasKey) {
-    EmitInstruction(MakeDictInstruction(OP_DICT_GET_STR, &access, line));
-    
-    StringResult value = {0};
-    
-    value.next = access.next;
-    value.srcVarIndex = -1;
-    value.sourceFromArgStack = 1;
-    
-    return ParseLenOfString(value, line);
-  }
-  
-  Instruction begin = {0};
-  
-  begin.opcode = OP_FORMAT_ARG_BEGIN;
-  begin.line = line;
-  
-  EmitInstruction(begin);
-  EmitInstruction(MakeDictInstruction(OP_DICT_REF_ARG, &access, line));
   
   if(access.next.type != TOKEN_RPAREN) {
     CompileError(access.next.line, "Expected )");
   }
   
-  Instruction call = {0};
-  
-  call.opcode = OP_CALL_BUILTIN;
-  call.builtinId = BUILTIN_DICT_LEN;
-  call.line = line;
-  
-  EmitInstruction(call);
+  if(access.hasKey) {
+    EmitInstruction(MakeDictInstruction(OP_DICT_LEN_ENTRY, &access, line));
+  } else {
+    DictAccessToRef(&access, line);
+    
+    Instruction begin = {0};
+    
+    begin.opcode = OP_FORMAT_ARG_BEGIN;
+    begin.line = line;
+    
+    EmitInstruction(begin);
+    EmitInstruction(MakeDictInstruction(OP_DICT_REF_ARG, &access, line));
+    
+    Instruction call = {0};
+    
+    call.opcode = OP_CALL_BUILTIN;
+    call.builtinId = BUILTIN_DICT_LEN;
+    call.line = line;
+    
+    EmitInstruction(call);
+  }
   
   ExprResult result = {0};
   
@@ -3225,50 +3361,199 @@ int ParsePositiveSize(Token sizeToken, char* what) {
 }
 
 void ExpectTerminator(Token token, LexerTokenType terminator);
+Token ParseDictValue(DictAccess* access, Token token, int line);
 
 // True if this token is one of + - * /
 int IsArithmeticOperator(LexerTokenType type) {
   return type == TOKEN_OP_ADD || type == TOKEN_OP_SUB || type == TOKEN_OP_MUL || type == TOKEN_OP_DIV;
 }
 
+// True if the call 'name(' returns a bool
+int CallReturnsBool(Token nameToken) {
+  int funcIndex = FindFunction(nameToken.value);
+  int builtinIndex = FindBuiltin(nameToken.value);
+  
+  return (funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_BOOL) ||
+         (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_BOOL);
+}
+
+// True if the call 'name(' returns a str
+int CallReturnsStr(Token nameToken) {
+  int funcIndex = FindFunction(nameToken.value);
+  int builtinIndex = FindBuiltin(nameToken.value);
+  
+  return (funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_STR &&
+          !functionSymbols[funcIndex].returnsArray) ||
+         (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_STR);
+}
+
+// Parse the entries of a dictionary literal, after its '{', into the
+// dictionary whose reference is on top of the reference stack (the reference
+// stays there): "key": value, "key": value }. Returns the token after the '}'.
+Token ParseDictLiteralBody(void) {
+  Token token = LexerNext();
+  
+  while(token.type != TOKEN_RBRACE) {
+    if(token.type != TOKEN_LIT_STRING) {
+      CompileError(token.line, "A dictionary key must be a string, like \"name\"");
+    }
+    
+    Token keyToken = token;
+    Token colon = LexerNext();
+    
+    if(colon.type != TOKEN_COLON) {
+      CompileError(colon.line, "Expected : after the key");
+    }
+    
+    DictAccess entry = {0};
+    
+    entry.viaRef = 1;
+    entry.keepRef = 1;
+    entry.keyLiteral = keyToken.value;
+    
+    token = ParseDictValue(&entry, LexerNext(), keyToken.line);
+    
+    if(token.type == TOKEN_COMMA) {
+      token = LexerNext();
+      continue;
+    }
+    
+    if(token.type != TOKEN_RBRACE) {
+      CompileError(token.line, "Expected , or }");
+    }
+  }
+  
+  return LexerNext();
+}
+
+// Push a reference to a dictionary that is the source of a copy: a dictionary
+// variable (or an entry of one that holds a dictionary), or a literal {...}
+// that is built into a new temporary dictionary. Returns the token after it.
+Token ParseDictSourceRef(Token token, int line) {
+  if(token.type == TOKEN_LBRACE) {
+    Instruction fresh = {0};
+    
+    fresh.opcode = OP_DICT_REF_NEW;
+    fresh.line = line;
+    
+    EmitInstruction(fresh);
+    
+    return ParseDictLiteralBody();
+  }
+  
+  if(token.type == TOKEN_IDENTIFIER) {
+    Token afterName = LexerNext();
+    
+    // A function that returns a dictionary: it leaves a temporary copy on
+    // the reference stack
+    if(afterName.type == TOKEN_LPAREN) {
+      int funcIndex = FindFunction(token.value);
+      
+      if(funcIndex == -1) {
+        CompileError(token.line, "Undefined function \"%s\"", token.value);
+      }
+      
+      if(!functionSymbols[funcIndex].hasReturnValue || functionSymbols[funcIndex].returnType != VAR_DICT) {
+        CompileError(token.line, "Function '%s' does not return a dictionary", token.value);
+      }
+      
+      return ParseFunctionCallArgs(funcIndex, token).next;
+    }
+    
+    int index = FindSymbol(token.value);
+    
+    if(index != -1 && symbols[index].type == VAR_DICT) {
+      DictAccess source = ParseDictAccess(token, afterName);
+      
+      DictAccessToRef(&source, line);
+      
+      return source.next;
+    }
+  }
+  
+  CompileError(token.line, "Expected a dictionary (a dictionary variable, or a literal like {\"key\": value})");
+}
+
 // Parse the value that goes into dictionary entry 'access' (in dict["key"] =
 // value, or after the colon in a dictionary literal), and emit the code that
 // stores it. The code that evaluates the element index and the key is
-// already emitted. The value can be a string, an int/float expression, or
-// another dictionary entry (copied with whatever type it holds). Returns the
-// token after the value.
+// already emitted. The value can be a number or math expression, a string,
+// a bool, NONE, a dictionary (a variable, or a literal like {"a": 1}), or
+// another dictionary entry (copied with the type it has). Returns the token
+// after the value.
 Token ParseDictValue(DictAccess* access, Token token, int line) {
   if(token.type == TOKEN_KW_NONE) {
-    CompileError(token.line, "A dictionary cannot hold NONE");
+    EmitInstruction(MakeDictInstruction(OP_DICT_SET_NONE, access, line));
+    
+    return LexerNext();
   }
   
-  if(token.type == TOKEN_LIT_BOOL) {
-    CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+  // A dictionary inside the dictionary: {"key": value, ...}
+  if(token.type == TOKEN_LBRACE) {
+    if(access->keepRef) {
+      // Inside a literal: make the entry, then fill it through a reference to it
+      EmitInstruction(MakeDictInstruction(OP_DICT_SET_NEWDICT, access, line));
+      
+      Instruction child = MakeDictInstruction(OP_DICT_REF_CHILD, access, line);
+      
+      EmitInstruction(child);
+      
+      Token after = ParseDictLiteralBody();
+      
+      Instruction done = {0};
+      
+      done.opcode = OP_DICT_REF_POP;
+      done.line = line;
+      
+      EmitInstruction(done);
+      
+      return after;
+    }
+    
+    // dict["key"] = {...}: build it in a temporary dictionary, then store that
+    Instruction fresh = {0};
+    
+    fresh.opcode = OP_DICT_REF_NEW;
+    fresh.line = line;
+    
+    EmitInstruction(fresh);
+    
+    Token after = ParseDictLiteralBody();
+    
+    EmitInstruction(MakeDictInstruction(OP_DICT_SET_COPY, access, line));
+    
+    return after;
   }
   
-  // 0 = number, 1 = string, 2 = another dictionary entry
+  // 0 = number, 1 = string, 2 = a dictionary (variable or entry), 3 = bool
   int kind = 0;
   Token afterName = {0};
   int hasAfterName = 0;
   
   if(token.type == TOKEN_LIT_STRING || token.type == TOKEN_KW_INPUT || token.type == TOKEN_KW_FORMAT || token.type == TOKEN_TYPE_STR) {
     kind = 1;
+  } else if(token.type == TOKEN_LIT_BOOL) {
+    kind = 3;
   } else if(token.type == TOKEN_IDENTIFIER) {
     afterName = LexerNext();
     hasAfterName = 1;
     
     if(afterName.type == TOKEN_LPAREN) {
       int funcIndex = FindFunction(token.value);
-      int builtinIndex = FindBuiltin(token.value);
       
-      if((funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_STR) ||
-         (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_STR)) {
-        kind = 1;
+      if(funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_DICT) {
+        // dict["key"] = function(): the entry gets the dictionary it returns
+        FunctionCallResult call = ParseFunctionCallArgs(funcIndex, token);
+        
+        EmitInstruction(MakeDictInstruction(OP_DICT_SET_COPY, access, line));
+        
+        return call.next;
       }
       
-      if((funcIndex != -1 && functionSymbols[funcIndex].hasReturnValue && functionSymbols[funcIndex].returnType == VAR_BOOL) ||
-         (builtinIndex != -1 && builtinTable[builtinIndex].returnKind == RET_BOOL)) {
-        CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+      if(CallReturnsStr(token)) {
+        kind = 1;
+      } else if(CallReturnsBool(token)) {
+        kind = 3;
       }
     } else {
       int index = FindSymbol(token.value);
@@ -3276,7 +3561,7 @@ Token ParseDictValue(DictAccess* access, Token token, int line) {
       if(index != -1 && symbols[index].type == VAR_STR) {
         kind = 1;
       } else if(index != -1 && symbols[index].type == VAR_BOOL) {
-        CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+        kind = 3;
       } else if(index != -1 && symbols[index].type == VAR_DICT) {
         kind = 2;
       }
@@ -3292,13 +3577,32 @@ Token ParseDictValue(DictAccess* access, Token token, int line) {
     return value.next;
   }
   
+  if(kind == 3) {
+    BoolResult value = hasAfterName ? ParseBoolIdentifier(token, afterName) : ParseBoolValue(token);
+    
+    Instruction set = MakeDictInstruction(OP_DICT_SET_NUM, access, line);
+    
+    set.valueType = VAR_BOOL;
+    set.propagateNone = hasAfterName;
+    
+    EmitInstruction(set);
+    
+    return value.next;
+  }
+  
   if(kind == 2) {
     DictAccess source = ParseDictAccess(token, afterName);
     
-    RequireDictKey(&source, token);
+    if(!source.hasKey) {
+      // A whole dictionary: the entry gets a copy of it
+      DictAccessToRef(&source, line);
+      EmitInstruction(MakeDictInstruction(OP_DICT_SET_COPY, access, line));
+      
+      return source.next;
+    }
     
     if(!IsArithmeticOperator(source.next.type)) {
-      // A plain copy of the entry, whatever type it holds
+      // A plain copy of the entry, whatever it holds
       EmitInstruction(MakeDictInstruction(OP_DICT_GET_DYN, &source, line));
       EmitInstruction(MakeDictInstruction(OP_DICT_SET_DYN, access, line));
       
@@ -3316,6 +3620,7 @@ Token ParseDictValue(DictAccess* access, Token token, int line) {
     
     math.next = source.next;
     math.type = VAR_FLOAT;
+    math.fromDict = 1;
     
     math = ParseNumericTermTail(math);
     math = ParseNumericExpressionTail(math);
@@ -3323,12 +3628,14 @@ Token ParseDictValue(DictAccess* access, Token token, int line) {
     Instruction set = MakeDictInstruction(OP_DICT_SET_NUM, access, line);
     
     set.valueType = math.type;
+    set.dictOp = 1;
     
     EmitInstruction(set);
     
     return math.next;
   }
   
+  int valueStart = bytecodeCount;
   ExprResult value;
   
   if(hasAfterName) {
@@ -3340,12 +3647,31 @@ Token ParseDictValue(DictAccess* access, Token token, int line) {
   }
   
   if(value.type == VAR_BOOL) {
-    CompileError(token.line, "A dictionary holds int, float and str values, not bool");
+    CompileError(token.line, "Write a bool value as true, false, or a bool variable");
   }
+  
+  LexerTokenType after = value.next.type;
+  
+  if(after == TOKEN_OP_GT || after == TOKEN_OP_LT || after == TOKEN_OP_EQ || after == TOKEN_OP_GE ||
+     after == TOKEN_OP_LE || after == TOKEN_OP_NE || after == TOKEN_KW_AND || after == TOKEN_KW_OR) {
+    CompileError(value.next.line, "To store the result of a comparison, put it in a bool variable first: var bool ok = a > b; then dict[\"key\"] = ok;");
+  }
+  
+  int valueEnd = bytecodeCount;
+  
+  // A single variable, array element, call or entry can be NONE, and then
+  // the entry becomes NONE too
+  int isBare = valueEnd > valueStart &&
+    (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
+     bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
+     bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+     bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
   
   Instruction set = MakeDictInstruction(OP_DICT_SET_NUM, access, line);
   
   set.valueType = value.type;
+  set.dictOp = value.fromDict ? 1 : 0;
+  set.propagateNone = isBare;
   
   EmitInstruction(set);
   
@@ -3353,6 +3679,7 @@ Token ParseDictValue(DictAccess* access, Token token, int line) {
 }
 
 // var dict name;   var dict name[size];   var dict name = {"key": value, ...};
+// var dict name = other;   var dict name[size] = {{...}, {...}};
 // 'name' is the variable name token and 'next' the token after the name (and
 // after the [size], if any).
 Token ParseDictDeclaration(Token name, Token next, int isArray, int arraySize) {
@@ -3378,68 +3705,125 @@ Token ParseDictDeclaration(Token name, Token next, int isArray, int arraySize) {
     CompileError(next.line, "Expected ; or =");
   }
   
-  if(isArray) {
-    CompileError(next.line, "An array of dictionaries cannot have initial values. Set the entries one by one, like %s[0][\"key\"] = value;", name.value);
-  }
-  
+  Token after;
   Token open = LexerNext();
   
-  if(open.type != TOKEN_LBRACE) {
-    CompileError(open.line, "A dictionary starts with {, like var dict %s = {\"key\": value};", name.value);
+  if(isArray) {
+    // = { {...}, {...} }: one dictionary literal for each element, in order
+    if(open.type != TOKEN_LBRACE) {
+      CompileError(open.line, "An array of dictionaries starts with {, like var dict %s[2] = {{\"key\": 1}, {\"key\": 2}};", name.value);
+    }
+    
+    Token token = LexerNext();
+    int element = 0;
+    
+    while(token.type != TOKEN_RBRACE) {
+      if(token.type != TOKEN_LBRACE) {
+        CompileError(token.line, "Every element of an array of dictionaries is a dictionary written with { }");
+      }
+      
+      if(element >= arraySize) {
+        CompileError(token.line, "Too many initial values for array '%s' of size %d", name.value, arraySize);
+      }
+      
+      Instruction number = {0};
+      
+      number.opcode = OP_PUSH_NUMBER;
+      number.numberValue = element;
+      
+      EmitInstruction(number);
+      
+      Instruction base = {0};
+      
+      base.opcode = OP_DICT_REF_VAR;
+      base.varIndex = index;
+      base.isLocal = symbols[index].isLocal;
+      base.destIsArray = 1;
+      base.line = token.line;
+      
+      EmitInstruction(base);
+      
+      token = ParseDictLiteralBody();
+      
+      Instruction done = {0};
+      
+      done.opcode = OP_DICT_REF_POP;
+      done.line = token.line;
+      
+      EmitInstruction(done);
+      
+      element++;
+      
+      if(token.type == TOKEN_COMMA) {
+        token = LexerNext();
+        continue;
+      }
+      
+      if(token.type != TOKEN_RBRACE) {
+        CompileError(token.line, "Expected , or }");
+      }
+    }
+    
+    after = LexerNext();
+  } else {
+    // The new dictionary is the destination of a copy from the literal or
+    // from the dictionary written after the =
+    Instruction base = {0};
+    
+    base.opcode = OP_DICT_REF_VAR;
+    base.varIndex = index;
+    base.isLocal = symbols[index].isLocal;
+    base.line = name.line;
+    
+    EmitInstruction(base);
+    
+    after = ParseDictSourceRef(open, name.line);
+    
+    Instruction copy = {0};
+    
+    copy.opcode = OP_DICT_COPY;
+    copy.line = name.line;
+    
+    EmitInstruction(copy);
   }
   
-  DictAccess access = {0};
-  
-  access.symIndex = index;
-  
-  Token token = LexerNext();
-  
-  while(token.type != TOKEN_RBRACE) {
-    if(token.type != TOKEN_LIT_STRING) {
-      CompileError(token.line, "A dictionary key must be a string, like \"name\"");
-    }
-    
-    Token colon = LexerNext();
-    
-    if(colon.type != TOKEN_COLON) {
-      CompileError(colon.line, "Expected : after the key");
-    }
-    
-    access.keyLiteral = token.value;
-    
-    token = ParseDictValue(&access, LexerNext(), token.line);
-    
-    if(token.type == TOKEN_COMMA) {
-      token = LexerNext();
-      continue;
-    }
-    
-    if(token.type != TOKEN_RBRACE) {
-      CompileError(token.line, "Expected , or }");
-    }
-  }
-  
-  Token semicolon = LexerNext();
-  
-  if(semicolon.type != TOKEN_SEMICOLON) {
-    CompileError(semicolon.line, "Expected ;");
+  if(after.type != TOKEN_SEMICOLON) {
+    CompileError(after.line, "Expected ;");
   }
   
   return LexerNext();
 }
 
 // A statement that starts with a dictionary: dict["key"] = value;
-// dict["key"] += number;  dict["key"]++;  (also for an element of an array of
-// dictionaries, dicts[i]["key"] = value;). 'token' is the dictionary name and
-// 'afterName' the token after it.
+// dict["key"] += number;  dict["key"]++;  dict = other;  (also for an element
+// of an array of dictionaries, dicts[i]["key"] = value;, and for a dictionary
+// inside a dictionary, dict["a"]["b"] = value;). 'token' is the dictionary
+// name and 'afterName' the token after it.
 Token ParseDictStatement(Token token, Token afterName, LexerTokenType terminator) {
   DictAccess access = ParseDictAccess(token, afterName);
-  
-  if(!access.hasKey) {
-    CompileError(token.line, "Dictionary '%s' needs a key here, like %s[\"key\"] = value;", token.value, token.value);
-  }
-  
   Token op = access.next;
+  
+  // dict = other; dict = {...}; dicts[1] = dicts[0];
+  if(!access.hasKey) {
+    if(op.type != TOKEN_OP_ASSIGN) {
+      CompileError(token.line, "Dictionary '%s' needs a key here, like %s[\"key\"] = value; or a whole dictionary on the right of =, like %s = other;", token.value, token.value, token.value);
+    }
+    
+    DictAccessToRef(&access, token.line);
+    
+    Token after = ParseDictSourceRef(LexerNext(), token.line);
+    
+    Instruction copy = {0};
+    
+    copy.opcode = OP_DICT_COPY;
+    copy.line = token.line;
+    
+    EmitInstruction(copy);
+    
+    ExpectTerminator(after, terminator);
+    
+    return LexerNext();
+  }
   
   if(op.type == TOKEN_OP_ASSIGN) {
     Token after = ParseDictValue(&access, LexerNext(), token.line);
@@ -3459,7 +3843,7 @@ Token ParseDictStatement(Token token, Token afterName, LexerTokenType terminator
     Instruction update = MakeDictInstruction(OP_DICT_UPDATE, &access, token.line);
     
     update.valueType = amount.type;
-    update.dictOp = op.type == TOKEN_OP_PLUS_ASSIGN ? 0 : 1;
+    update.dictOp = (op.type == TOKEN_OP_PLUS_ASSIGN ? 0 : 1) | (amount.fromDict ? 2 : 0);
     
     EmitInstruction(update);
     
@@ -3494,10 +3878,12 @@ Token ParseDictStatement(Token token, Token afterName, LexerTokenType terminator
 }
 
 // A comparison that starts with a dictionary entry: dict["age"] >= 18,
-// dict["name"] == "Delfin", dict["a"] == other["a"]. What the entry holds is
-// only known when the program runs, so the compiler looks at what it is
-// compared with: a string makes it a string comparison, another entry makes
-// it a comparison on whatever both hold, anything else is a number.
+// dict["name"] == "Delfin", dict["a"] == other["a"], dict["x"] == NONE. What
+// the entry holds is only known when the program runs, so the compiler looks
+// at what it is compared with: a string makes it a string comparison, a bool
+// a bool comparison, another entry a comparison on whatever both hold, NONE
+// asks if the entry is NONE, anything else is a number. An entry on its own
+// is a condition: a bool entry is its value, a number is true if it is not 0.
 CondResult ParseDictComparison(Token token) {
   DictAccess access = ParseDictAccess(token, LexerNext());
   
@@ -3514,6 +3900,7 @@ CondResult ParseDictComparison(Token token) {
   left.next = access.next;
   left.type = VAR_FLOAT;
   left.dictBare = 1;
+  left.fromDict = 1;
   
   LexerTokenType op = left.next.type;
   
@@ -3521,7 +3908,20 @@ CondResult ParseDictComparison(Token token) {
                      op == TOKEN_OP_GE || op == TOKEN_OP_LE || op == TOKEN_OP_NE;
   
   if(!isComparison) {
-    // Math on the entry (dict["a"] + 1 > 2), or just the number itself
+    if(!IsArithmeticOperator(op)) {
+      // The entry alone, as a condition
+      bytecode[getIndex].valueType = VAR_BOOL;
+      bytecode[getIndex].dictOp = 1;
+      
+      CondResult alone = {0};
+      
+      alone.next = left.next;
+      alone.type = VAR_BOOL;
+      
+      return alone;
+    }
+    
+    // Math on the entry (dict["a"] + 1 > 2)
     left = ParseNumericTermTail(left);
     left = ParseNumericExpressionTail(left);
     
@@ -3536,35 +3936,54 @@ CondResult ParseDictComparison(Token token) {
   int opLine = left.next.line;
   Token rhsToken = LexerNext();
   
+  CondResult result = {0};
+  
+  result.type = VAR_BOOL;
+  
+  // dict["x"] == NONE, dict["x"] != NONE
   if(rhsToken.type == TOKEN_KW_NONE) {
-    CompileError(opLine, "A dictionary entry cannot be compared with NONE, use has_key(%s, \"key\") to see if a key exists", token.value);
+    if(op != TOKEN_OP_EQ && op != TOKEN_OP_NE) {
+      CompileError(opLine, "NONE can only be compared with == or !=");
+    }
+    
+    bytecode[getIndex].opcode = OP_DICT_IS_NONE;
+    bytecode[getIndex].dictOp = op == TOKEN_OP_EQ ? 0 : 1;
+    
+    result.next = LexerNext();
+    
+    return result;
   }
   
-  // What is on the right: 0 = a number, 1 = a string, 2 = another entry
+  // What is on the right: 0 = a number, 1 = a string, 2 = another entry,
+  // 3 = a bool
   int rhsKind = 0;
   Token rhsAfter = {0};
   int hasRhsAfter = 0;
   
-  if(LooksLikeGeneralStringValue(rhsToken)) {
+  if(rhsToken.type == TOKEN_LIT_BOOL) {
+    rhsKind = 3;
+  } else if(LooksLikeGeneralStringValue(rhsToken)) {
     rhsKind = 1;
   } else if(rhsToken.type == TOKEN_IDENTIFIER) {
     rhsAfter = LexerNext();
     hasRhsAfter = 1;
     
-    if(rhsAfter.type != TOKEN_LPAREN) {
+    if(rhsAfter.type == TOKEN_LPAREN) {
+      if(CallReturnsBool(rhsToken)) {
+        rhsKind = 3;
+      }
+    } else {
       int index = FindSymbol(rhsToken.value);
       
       if(index != -1 && symbols[index].type == VAR_STR) {
         rhsKind = 1;
       } else if(index != -1 && symbols[index].type == VAR_DICT) {
         rhsKind = 2;
+      } else if(index != -1 && symbols[index].type == VAR_BOOL) {
+        rhsKind = 3;
       }
     }
   }
-  
-  CondResult result = {0};
-  
-  result.type = VAR_BOOL;
   
   if(rhsKind == 1) {
     if(op != TOKEN_OP_EQ && op != TOKEN_OP_NE) {
@@ -3595,7 +4014,18 @@ CondResult ParseDictComparison(Token token) {
   
   cmp.line = opLine;
   
-  if(rhsKind == 2) {
+  if(rhsKind == 3) {
+    if(op != TOKEN_OP_EQ && op != TOKEN_OP_NE) {
+      CompileError(opLine, "A bool can only be compared with == or !=");
+    }
+    
+    // The entry on the left has to be a bool
+    bytecode[getIndex].valueType = VAR_BOOL;
+    
+    BoolResult rhs = hasRhsAfter ? ParseBoolIdentifier(rhsToken, rhsAfter) : ParseBoolValue(rhsToken);
+    
+    result.next = rhs.next;
+  } else if(rhsKind == 2) {
     DictAccess right = ParseDictAccess(rhsToken, rhsAfter);
     
     RequireDictKey(&right, rhsToken);
@@ -3628,6 +4058,7 @@ CondResult ParseDictComparison(Token token) {
     
     math.next = right.next;
     math.type = VAR_FLOAT;
+    math.fromDict = 1;
     
     math = ParseNumericTermTail(math);
     math = ParseNumericExpressionTail(math);
@@ -3999,7 +4430,8 @@ Token ParseVarDeclaration() {
         propagateNone = valueEnd > valueStart &&
           (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
            bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
         nextAfter = value.next;
       }
     } else {
@@ -4058,7 +4490,8 @@ Token ParseVarDeclaration() {
       propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
      bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
       
       nextAfter = exprResult.next;
     }
@@ -4157,7 +4590,14 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
       // Statement context: the return value isn't used, discard it. String
       // returns live on a separate stack from numeric ones, so which opcode
       // discards it depends on the return type.
-      if(call.returnType == VAR_STR) {
+      if(call.returnType == VAR_DICT) {
+        Instruction popDict = {0};
+        
+        popDict.opcode = OP_DICT_REF_POP;
+        popDict.line = token.line;
+        
+        EmitInstruction(popDict);
+      } else if(call.returnType == VAR_STR) {
         Instruction popStr = {0};
         
         popStr.opcode = OP_POP_STRING_VALUE;
@@ -4381,7 +4821,8 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
       isBareCopy = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
          bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
       nextTok = value.next;
     }
     
@@ -4434,7 +4875,8 @@ Token ParseIdentifierStatementFrom(Token token, Token afterName, LexerTokenType 
       int propagateNone = valueEnd > valueStart &&
         (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
      bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
       
       Instruction instruction = {0};
       
@@ -4673,6 +5115,18 @@ Token ParsePrintStatement() {
         CompileError(call.next.line, "Expected ;");
       }
       
+      if(call.returnType == VAR_DICT) {
+        Instruction printDict = {0};
+        
+        printDict.opcode = OP_DICT_PRINT_ALL;
+        printDict.viaRef = 1;
+        printDict.line = value.line;
+        
+        EmitInstruction(printDict);
+        
+        return LexerNext();
+      }
+      
       Instruction printInstruction = {0};
       
       if(call.returnType == VAR_STR) {
@@ -4700,6 +5154,8 @@ Token ParsePrintStatement() {
           CompileError(access.next.line, "Expected ;");
         }
         
+        DictAccessToRef(&access, value.line);
+        
         EmitInstruction(MakeDictInstruction(OP_DICT_PRINT_ALL, &access, value.line));
         
         return LexerNext();
@@ -4723,6 +5179,7 @@ Token ParsePrintStatement() {
       
       math.next = access.next;
       math.type = VAR_FLOAT;
+      math.fromDict = 1;
       
       math = ParseNumericTermTail(math);
       math = ParseNumericExpressionTail(math);
@@ -4735,6 +5192,7 @@ Token ParsePrintStatement() {
       
       printMath.opcode = OP_PRINT_VALUE;
       printMath.valueType = math.type;
+      printMath.dictOp = math.fromDict && math.type == VAR_FLOAT ? 1 : 0;
       
       EmitInstruction(printMath);
       
@@ -4809,7 +5267,8 @@ Token ParsePrintStatement() {
     int isBare = valueEnd > valueStart &&
       (bytecode[valueEnd - 1].opcode == OP_PUSH_VAR || bytecode[valueEnd - 1].opcode == OP_PUSH_ARR ||
      bytecode[valueEnd - 1].opcode == OP_CALL || bytecode[valueEnd - 1].opcode == OP_CALL_BUILTIN ||
-         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE);
+         bytecode[valueEnd - 1].opcode == OP_CALL_NATIVE ||
+         bytecode[valueEnd - 1].opcode == OP_DICT_GET_NUM);
     
     Instruction instruction = {0};
     
@@ -4876,7 +5335,7 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
     } else if(typeToken.type == TOKEN_TYPE_BOOL) {
       paramType = VAR_BOOL;
     } else if(typeToken.type == TOKEN_TYPE_DICT) {
-      CompileError(typeToken.line, "A dictionary cannot be a function parameter. Declare it outside the function and use it directly, or pass its entries one by one");
+      paramType = VAR_DICT;
     } else {
       CompileError(typeToken.line, "Expected type");
     }
@@ -4932,6 +5391,10 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
     int arraySize = 0;
     
     if(afterName.type == TOKEN_LBRACKET) {
+      if(paramType == VAR_DICT) {
+        CompileError(afterName.line, "A dictionary parameter cannot be an array");
+      }
+      
       Token sizeToken = LexerNext();
       
       if(sizeToken.type != TOKEN_LIT_NUMBER) {
@@ -4983,7 +5446,8 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
     
     declareInstr.opcode = (func->paramTypes[i] == VAR_INT) ? OP_DECLARE_INT :
                            (func->paramTypes[i] == VAR_FLOAT) ? OP_DECLARE_FLOAT :
-                           (func->paramTypes[i] == VAR_BOOL) ? OP_DECLARE_BOOL : OP_DECLARE_STR;
+                           (func->paramTypes[i] == VAR_BOOL) ? OP_DECLARE_BOOL :
+                           (func->paramTypes[i] == VAR_DICT) ? OP_DECLARE_DICT : OP_DECLARE_STR;
     declareInstr.varIndex = func->paramVarIndex[i];
     declareInstr.isLocal = 1;
     declareInstr.strSize = strSizes[i];
@@ -5000,6 +5464,10 @@ Token ParseParameterList(FunctionSymbol* func, Token afterParen) {
     } else if(func->paramTypes[i] == VAR_STR) {
       declareInstr.sourceFromArgStack = 1;
       declareInstr.srcVarIndex = -1;
+    } else if(func->paramTypes[i] == VAR_DICT) {
+      // The caller leaves a copy of the dictionary on the dictionary
+      // reference stack, this declare takes it
+      declareInstr.sourceFromArgStack = 1;
     }
     
     declareInstr.text = names[i].value;
@@ -5193,6 +5661,10 @@ Token ParseReturnStatement(Token returnToken) {
       CompileError(returnToken.line, "Function '%s' returns an array and cannot use a bare 'return;'", func->name);
     }
     
+    if(func->hasReturnValue && func->returnType == VAR_DICT) {
+      CompileError(returnToken.line, "Function '%s' returns a dictionary and cannot use a bare 'return;'", func->name);
+    }
+    
     Instruction pushValue = {0};
     
     pushValue.line = returnToken.line;
@@ -5245,15 +5717,72 @@ Token ParseReturnStatement(Token returnToken) {
     isFunctionCallLookingAtLparen = (afterName.type == TOKEN_LPAREN);
   }
   
+  // "return dict;" and "return {...};" return a whole dictionary (a copy of it).
+  // "return dict["key"] + 1;" returns the entry read as a number, and a text
+  // entry is returned with str(dict["key"]).
+  int returnsWholeDict = afterReturn.type == TOKEN_LBRACE;
+  
   if(afterReturn.type == TOKEN_IDENTIFIER && !isFunctionCallLookingAtLparen) {
     int dictIndex = FindSymbol(afterReturn.value);
     
-    // "return dict;" is not possible. "return dict["key"] + 1;" is: an entry
-    // read as a number is a float, like in any other expression. To return
-    // a text entry, write str(dict["key"]).
-    if(dictIndex != -1 && symbols[dictIndex].type == VAR_DICT && afterName.type != TOKEN_LBRACKET) {
-      CompileError(returnToken.line, "A dictionary cannot be returned from a function. Return one of its entries, like return %s[\"key\"]; or str(%s[\"key\"]) for a text", afterReturn.value, afterReturn.value);
+    if(dictIndex != -1 && symbols[dictIndex].type == VAR_DICT) {
+      if(symbols[dictIndex].isArray) {
+        CompileError(returnToken.line, "An element of an array of dictionaries cannot be returned directly. Copy it into a dictionary variable first, like var dict item = %s[0]; return item;", afterReturn.value);
+      }
+      
+      if(afterName.type != TOKEN_LBRACKET) {
+        returnsWholeDict = 1;
+      }
     }
+  }
+  
+  if(returnsWholeDict) {
+    if(func->hasReturnValue && func->returnType != VAR_DICT) {
+      CompileError(returnToken.line, "Function '%s' returns inconsistent types", func->name);
+    }
+    
+    if(!func->hasReturnValue) {
+      func->hasReturnValue = 1;
+      func->returnType = VAR_DICT;
+    }
+    
+    Token afterDict;
+    
+    if(afterReturn.type == TOKEN_LBRACE) {
+      Instruction fresh = {0};
+      
+      fresh.opcode = OP_DICT_REF_NEW;
+      fresh.line = returnToken.line;
+      
+      EmitInstruction(fresh);
+      
+      afterDict = ParseDictLiteralBody();
+    } else {
+      DictAccess whole = ParseDictAccess(afterReturn, afterName);
+      
+      DictAccessToRef(&whole, returnToken.line);
+      
+      afterDict = whole.next;
+    }
+    
+    // The copy is made before the function's own variables are freed
+    Instruction clone = {0};
+    
+    clone.opcode = OP_DICT_REF_CLONE;
+    clone.line = returnToken.line;
+    
+    EmitInstruction(clone);
+    
+    ExpectTerminator(afterDict, TOKEN_SEMICOLON);
+    
+    Instruction ret = {0};
+    
+    ret.opcode = OP_RETURN;
+    ret.line = returnToken.line;
+    
+    EmitInstruction(ret);
+    
+    return LexerNext();
   }
   
   // "return someArray;" -- a bare array variable, not indexed. If it were

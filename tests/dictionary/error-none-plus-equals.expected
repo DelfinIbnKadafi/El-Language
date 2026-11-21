@@ -1,0 +1,2 @@
+error-none-plus-equals.ell (2) : Key "n" of dictionary 'd' holds NONE, so + and - cannot be used on it
+exit=1

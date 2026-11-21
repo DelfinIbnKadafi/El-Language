@@ -1,0 +1,2 @@
+error-literal-missing-colon.ell (1) : Expected : after the key
+exit=1

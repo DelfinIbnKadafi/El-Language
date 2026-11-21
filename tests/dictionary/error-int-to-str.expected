@@ -1,0 +1,2 @@
+error-int-to-str.ell (2) : Key "a" of dictionary 'd' holds an int, not a str
+exit=1

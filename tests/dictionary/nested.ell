@@ -1,0 +1,61 @@
+// nested dictionaries
+var dict user = {"name": "Delfin", "address": {"city": "Jakarta", "zip": 12345, "geo": {"lat": -6.2, "lng": 106.8}}, "active": true};
+print user;
+print user["address"]["city"];
+print user["address"]["geo"]["lat"];
+print user["address"];
+print len(user["address"]);
+print len(user["address"]["city"]);
+print has_key(user["address"], "zip");
+print has_key(user["address"], "country");
+
+user["address"]["city"] = "Bandung";
+user["address"]["zip"] += 1;
+user["address"]["geo"]["lat"] = 1.5;
+user["address"]["country"] = "ID";
+print user["address"];
+
+var str c = user["address"]["city"];
+var int z = user["address"]["zip"];
+print format("%s %d", c, z);
+if(user["address"]["city"] == "Bandung") =
+  print "bandung";
+if(user["address"]["zip"] > 12000 and user["active"]) =
+  print "zip > 12000";
+
+// create nested later
+user["job"] = {};
+user["job"]["title"] = "dev";
+user["job"]["years"] = 3;
+print user["job"];
+user["tags"] = {"a": 1};
+user["tags"]["b"] = 2;
+print user["tags"];
+
+// keys by variable at every level
+var str k1 = "address";
+var str k2 = "city";
+print user[k1][k2];
+user[k1][k2] = "Surabaya";
+print user["address"]["city"];
+
+// walk keys of nested
+var int i = 0;
+while(i < len(user["address"])) =
+  print key_at(user["address"], i);
+  i++;
+remove_key(user["address"], "country");
+print has_key(user["address"], "country");
+
+// array of dicts with nested
+var dict people[2];
+people[0]["name"] = "A";
+people[0]["home"] = {"city": "X"};
+people[1]["name"] = "B";
+people[1]["home"] = {"city": "Y"};
+var int j = 0;
+while(j < 2) =
+  print format("%s lives in %s", people[j]["name"], people[j]["home"]["city"]);
+  j++;
+people[1]["home"]["city"] = "Z";
+print people[1];

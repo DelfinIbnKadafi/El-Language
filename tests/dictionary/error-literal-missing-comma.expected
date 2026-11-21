@@ -1,0 +1,2 @@
+error-literal-missing-comma.ell (1) : Expected , or }
+exit=1

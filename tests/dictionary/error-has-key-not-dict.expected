@@ -1,0 +1,2 @@
+error-has-key-not-dict.ell (2) : has_key() argument 1 must be a dictionary
+exit=1

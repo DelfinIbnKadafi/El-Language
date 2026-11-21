@@ -1,0 +1,2 @@
+error-depth-limit.ell (4) : Dictionaries can only be nested 100 levels deep
+exit=1

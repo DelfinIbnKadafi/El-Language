@@ -1,0 +1,3 @@
+var dict d = {"a": 5, "s": "x", "n": NONE, "b": true, "in": {"z": 1}, "in2": {"z": 2}};
+if(d["in"] == d["in2"]) =
+  print 1;

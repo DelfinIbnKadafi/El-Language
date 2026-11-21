@@ -1,0 +1,6 @@
+var dict d = {"a": 1};
+var int i = 0;
+while(i < 1000) =
+  d["x"] = d;
+  i++;
+print "unreachable";

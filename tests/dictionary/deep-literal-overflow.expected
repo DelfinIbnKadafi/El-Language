@@ -1,0 +1,2 @@
+deep-literal-overflow.ell (1) : Stack overflow: dictionary expression nesting too deep
+exit=1

@@ -1,0 +1,2 @@
+error-compare-dicts.ell (2) : Dictionaries cannot be compared
+exit=1

@@ -1,0 +1,5 @@
+function f() =
+  var dict d;
+  return d;
+function g() =
+  return;

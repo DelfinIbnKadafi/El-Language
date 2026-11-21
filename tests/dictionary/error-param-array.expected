@@ -1,0 +1,2 @@
+error-param-array.ell (1) : A dictionary parameter cannot be an array
+exit=1

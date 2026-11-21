@@ -1,0 +1,23 @@
+{"on": true, "off": false, "nothing": NONE, "n": 5, "s": "text"}
+true
+false
+NONE
+on is true
+off is false
+not off
+on == true
+off != true
+on == flag
+non-zero number is true
+nothing is NONE
+n is not NONE
+x is NONE
+t is NONE
+NONE
+NONE
+true
+9
+true
+true
+true NONE NONE
+exit=0

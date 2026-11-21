@@ -1,0 +1,2 @@
+error-nested-first-missing.ell (2) : Key "nope" not found in dictionary 'd'
+exit=1

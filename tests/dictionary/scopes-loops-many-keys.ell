@@ -1,0 +1,60 @@
+// scopes: local dict in a function, recursion, dict in a loop
+function count(var int n) =
+  var dict local;
+  local["n"] = n;
+  var int below = 0;
+  if(n > 0) =
+    below = count(n - 1);
+  print local["n"];
+  return below + 1;
+print count(3);
+
+var int i = 0;
+while(i < 3) =
+  var dict row;
+  row["i"] = i;
+  row["sq"] = i * i;
+  print row;
+  i++;
+
+// for loop with dict in header/update
+var dict st = {"i": 0, "total": 0};
+for(st["i"] = 0; st["i"] < 5; st["i"]++) =
+  st["total"] += st["i"];
+print st;
+
+// input into a dict
+var dict form;
+form["name"] = input "Name: ";
+print form["name"];
+
+// type change on overwrite, odd keys
+var dict o;
+o["k"] = 1;
+o["k"] = "now text";
+o[""] = "empty key";
+o["with space"] = 2.5;
+print o;
+print o[""];
+
+// many keys
+var dict big;
+var int j = 0;
+while(j < 3000) =
+  big[str(j)] = j;
+  j++;
+print len(big);
+print big["2999"];
+var int s = 0;
+j = 0;
+while(j < 3000) =
+  s += big[str(j)];
+  j++;
+print s;
+j = 0;
+while(j < 2990) =
+  remove_key(big, str(j));
+  j++;
+print len(big);
+print big["2995"];
+print key_at(big, 0);

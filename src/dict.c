@@ -56,6 +56,7 @@ Dict* DictCreate(void) {
 static void FreeEntry(DictEntry* entry) {
   free(entry->key);
   free(entry->string);
+  DictFree(entry->child);
 }
 
 void DictFree(Dict* dict) {
@@ -95,6 +96,9 @@ static DictEntry* FindOrAdd(Dict* dict, const char* key) {
   if(found != NULL) {
     free(found->string);
     found->string = NULL;
+    
+    DictFree(found->child);
+    found->child = NULL;
     
     return found;
   }
@@ -148,6 +152,92 @@ void DictSetString(Dict* dict, const char* key, const char* value) {
   entry->string = copy;
 }
 
+void DictSetNone(Dict* dict, const char* key) {
+  DictEntry* entry = FindOrAdd(dict, key);
+  
+  entry->type = VAR_NONE;
+  entry->number = 0;
+}
+
+int DictSetChild(Dict* dict, const char* key, Dict* child) {
+  if(child->depth + 1 > MAX_DICT_DEPTH) {
+    return 0;
+  }
+  
+  DictEntry* entry = FindOrAdd(dict, key);
+  
+  entry->type = VAR_DICT;
+  entry->number = 0;
+  entry->child = child;
+  
+  if(child->depth + 1 > dict->depth) {
+    dict->depth = child->depth + 1;
+  }
+  
+  return 1;
+}
+
+Dict* DictClone(Dict* dict) {
+  Dict* copy = DictCreate();
+  
+  for(int i = 0; i < dict->count; i++) {
+    DictEntry* entry = &dict->entries[i];
+    
+    if(entry->type == VAR_STR) {
+      DictSetString(copy, entry->key, entry->string);
+    } else if(entry->type == VAR_NONE) {
+      DictSetNone(copy, entry->key);
+    } else if(entry->type == VAR_DICT) {
+      DictSetChild(copy, entry->key, DictClone(entry->child));
+    } else {
+      DictSetNumber(copy, entry->key, entry->type, entry->number);
+    }
+  }
+  
+  return copy;
+}
+
+void DictClear(Dict* dict) {
+  for(int i = 0; i < dict->count; i++) {
+    FreeEntry(&dict->entries[i]);
+  }
+  
+  dict->count = 0;
+  dict->depth = 0;
+  
+  RebuildTable(dict, DICT_START_TABLE_SIZE);
+}
+
+void DictCopyInto(Dict* dest, Dict* source) {
+  if(dest == source) {
+    return;
+  }
+  
+  // The copy is made before anything is cleared: 'source' can be inside
+  // 'dest' (dest = dest["inner"]), and clearing would free it
+  Dict* copy = DictClone(source);
+  
+  DictClear(dest);
+  
+  for(int i = 0; i < copy->count; i++) {
+    DictEntry* entry = &copy->entries[i];
+    
+    if(entry->type == VAR_STR) {
+      DictSetString(dest, entry->key, entry->string);
+    } else if(entry->type == VAR_NONE) {
+      DictSetNone(dest, entry->key);
+    } else if(entry->type == VAR_DICT) {
+      // Move the nested dictionary over instead of copying it again
+      DictSetChild(dest, entry->key, entry->child);
+      entry->child = NULL;
+    } else {
+      DictSetNumber(dest, entry->key, entry->type, entry->number);
+    }
+  }
+  
+  DictFree(copy);
+}
+
 int DictRemove(Dict* dict, const char* key) {
   DictEntry* entry = DictFind(dict, key);
   
@@ -179,5 +269,41 @@ const char* DictTypeName(VarType type) {
     return "float";
   }
   
+  if(type == VAR_BOOL) {
+    return "bool";
+  }
+  
+  if(type == VAR_NONE) {
+    return "NONE";
+  }
+  
+  if(type == VAR_DICT) {
+    return "dict";
+  }
+  
   return "str";
+}
+
+const char* DictTypeNameWithArticle(VarType type) {
+  if(type == VAR_INT) {
+    return "an int";
+  }
+  
+  if(type == VAR_FLOAT) {
+    return "a float";
+  }
+  
+  if(type == VAR_BOOL) {
+    return "a bool";
+  }
+  
+  if(type == VAR_NONE) {
+    return "NONE";
+  }
+  
+  if(type == VAR_DICT) {
+    return "a dict";
+  }
+  
+  return "a str";
 }

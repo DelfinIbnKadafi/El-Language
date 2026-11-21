@@ -1,0 +1,2 @@
+error-array-out-of-range.ell (2) : Array index 5 out of bounds (size 2)
+exit=1

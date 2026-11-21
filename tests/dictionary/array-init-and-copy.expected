@@ -1,0 +1,11 @@
+{"name": "A", "age": 1}
+{"name": "B", "age": 2}
+{}
+A
+{"name": "C", "age": 1}
+{"name": "new"}
+{}
+3
+{"name": "new"}
+{}
+exit=0

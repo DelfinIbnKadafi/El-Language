@@ -1,0 +1,2 @@
+error-dict-fn-undefined.ell (1) : Undefined function "nofunc"
+exit=1

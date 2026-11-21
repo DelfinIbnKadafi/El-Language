@@ -1,0 +1,2 @@
+error-whole-dict-value.ell (2) : Dictionary 'd' needs a key here, like d["key"]
+exit=1

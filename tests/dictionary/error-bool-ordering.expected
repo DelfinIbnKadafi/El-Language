@@ -1,0 +1,2 @@
+error-bool-ordering.ell (2) : A bool can only be compared with == or !=
+exit=1

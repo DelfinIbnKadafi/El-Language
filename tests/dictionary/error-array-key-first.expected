@@ -1,0 +1,2 @@
+error-array-key-first.ell (2) : 'users' is an array of dictionaries: write the element number first, like users[0]["key"]
+exit=1

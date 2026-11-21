@@ -1,0 +1,2 @@
+var dict users[2];
+users["name"] = 1;

@@ -1,0 +1,2 @@
+error-none-ordering.ell (2) : NONE can only be compared with == or !=
+exit=1

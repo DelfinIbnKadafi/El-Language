@@ -1,0 +1,2 @@
+error-compare-str-number.ell (2) : Key "b" of dictionary 'd' holds a str, not a number
+exit=1

@@ -1,0 +1,40 @@
+var dict a = {"x": 1, "inner": {"deep": "v"}};
+var dict b = a;
+var dict e = {};
+print b;
+print e;
+
+// copies are independent
+b["x"] = 99;
+b["inner"]["deep"] = "changed";
+print a;
+print b;
+
+// assign whole dict
+e = a;
+a["x"] = 5;
+print e;
+a = {"y": 2, "x": a["x"] + 1};
+print a;
+a = {};
+print a;
+print len(a);
+
+// literal with self reference uses the old content
+var dict s = {"n": 1};
+s = {"n": s["n"] + 1, "old": s["n"]};
+print s;
+
+// subtree to variable, and dict = its own child
+var dict t = {"k": {"z": 1, "w": 2}};
+var dict part = t["k"];
+print part;
+t = t["k"];
+print t;
+
+// entry gets a whole dict (copy)
+var dict h = {"a": 1};
+var dict holder = {};
+holder["copy"] = h;
+h["a"] = 2;
+print holder;

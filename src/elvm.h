@@ -161,7 +161,64 @@ typedef enum {
   // 0 for ==, 1 !=, 2 >, 3 <, 4 >=, 5 <=) and pushes the bool result.
   OP_DICT_GET_DYN,
   OP_DICT_SET_DYN,
-  OP_DICT_CMP
+  OP_DICT_CMP,
+  
+  // Dictionary references. Instead of naming a variable, a dictionary
+  // instruction can take its dictionary from the dictionary reference stack
+  // ('viaRef'; the reference is popped unless 'keepRef' is set). This is how
+  // a dictionary inside another one (dict["a"]["b"]), a whole-dictionary
+  // argument and a temporary dictionary are reached.
+  
+  // Push a reference to a dictionary variable (or one element of an array of
+  // dictionaries: the index is popped off the numeric stack)
+  OP_DICT_REF_VAR,
+  
+  // Pop a reference, push a reference to the dictionary that is stored under
+  // the key (the entry has to hold a dictionary)
+  OP_DICT_REF_CHILD,
+  
+  // Push a reference to a new empty dictionary that nobody else owns. It is
+  // freed when the reference is popped and not given to something else.
+  OP_DICT_REF_NEW,
+  
+  // Pop a reference (and free the dictionary if it is a temporary one)
+  OP_DICT_REF_POP,
+  
+  // dest = source: pops the source reference, then the destination reference
+  OP_DICT_COPY,
+  
+  // Remove every key of the dictionary
+  OP_DICT_CLEAR,
+  
+  // dict["key"] = {} : the key now holds a new empty dictionary
+  OP_DICT_SET_NEWDICT,
+  
+  // dict["key"] = NONE
+  OP_DICT_SET_NONE,
+  
+  // Pushes true if the entry holds NONE ('dictOp' 0) or if it does not
+  // ('dictOp' 1)
+  OP_DICT_IS_NONE,
+  
+  // Pops a number that came out of dictionary math and checks that it is a
+  // whole number inside the int range, then pushes it again. The result is
+  // used where an int is needed.
+  OP_NUM_TO_INT_CHECKED,
+  
+  // dict["key"] = another dictionary: pops a reference to the source
+  // dictionary and stores a copy of it under the key (a temporary dictionary
+  // is moved in instead of copied)
+  OP_DICT_SET_COPY,
+  
+  // len(dict["key"]): the length of the text the entry holds, or the number of
+  // keys if it holds a dictionary
+  OP_DICT_LEN_ENTRY,
+  
+  // Turn the reference on top of the reference stack into one for a new
+  // temporary dictionary that holds a copy (nothing happens if it already is
+  // a temporary one). A dictionary given to a function, or returned from it,
+  // is passed this way: by value, like an array.
+  OP_DICT_REF_CLONE
 } Opcode;
 
 // Which native implementation OP_CALL_BUILTIN should run. len() only
@@ -202,7 +259,10 @@ typedef enum {
   
   // A dictionary (see dict.h). Also used as the type of a value that is only
   // known when the program runs, like a dictionary entry given to format().
-  VAR_DICT
+  VAR_DICT,
+  
+  // Only used for a dictionary entry that holds NONE (see dict.h)
+  VAR_NONE
 } VarType;
 
 // Single variable entry. A scalar is simply an array with arraySize == 1,
@@ -359,8 +419,19 @@ typedef struct {
   // the literal in stringLiteral. Used by the OP_DICT_* instructions.
   int keyFromStack;
   
-  // Which operation OP_DICT_UPDATE does: 0 adds, 1 subtracts.
+  // OP_DICT_UPDATE: bit 0 set subtracts instead of adds, bit 1 set means the
+  // number added came out of dictionary math, so a whole number counts as an
+  // int. OP_DICT_CMP: the comparison. OP_DICT_SET_NUM: 1 stores a whole
+  // number as an int. OP_PRINT_VALUE: 1 writes a whole number without
+  // exponent. OP_DICT_GET_NUM reading a bool: 1 also accepts a number
+  // (non-zero is true).
   int dictOp;
+  
+  // The dictionary of an OP_DICT_* instruction comes off the dictionary
+  // reference stack instead of from variable 'varIndex'. keepRef leaves the
+  // reference there.
+  int viaRef;
+  int keepRef;
 } Instruction;
 
 // Execute bytecode

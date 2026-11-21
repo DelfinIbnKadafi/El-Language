@@ -1,0 +1,55 @@
+function make_user(var str name, var int age) =
+  var dict u;
+  u["name"] = name;
+  u["age"] = age;
+  u["tags"] = {"new": true};
+  return u;
+
+function birthday(var dict d) =
+  d["age"] += 1;
+  d["touched"] = true;
+  return d["age"];
+
+function describe(var dict d) =
+  return format("%s (%d)", str(d["name"]), d["age"]);
+
+function config() =
+  return {"host": "localhost", "port": 3306, "opts": {"ssl": false}};
+
+var dict bob = make_user("Bob", 25);
+print bob;
+print birthday(bob);
+print bob;                       // unchanged: passed by value
+print describe(bob);
+
+var dict c = config();
+print c;
+c["port"] = 5432;
+var dict c2;
+c2 = config();
+print c2["port"];
+
+var dict list[2];
+list[0] = make_user("A", 1);
+list[1] = make_user("B", 2);
+print list[1];
+print describe(list[0]);
+print birthday(list[0]);
+print list[0]["age"];
+
+print make_user("Temp", 9);
+make_user("discarded", 1);
+bob["child"] = make_user("Kid", 3);
+print bob["child"]["name"];
+print birthday(make_user("X", 7));
+print describe({"name": "Lit", "age": 4});
+print describe(bob["child"]);
+
+// global dict still usable in functions, local shadowing
+var dict g = {"v": 1};
+function bump() =
+  g["v"] += 1;
+  return g["v"];
+print bump();
+print bump();
+print g;

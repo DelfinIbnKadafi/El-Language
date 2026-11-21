@@ -1,0 +1,3 @@
+function f(var dict x) =
+  return 1;
+var int z = f(5);

@@ -1,0 +1,3 @@
+var dict u[2];
+function f() =
+  return u[0];

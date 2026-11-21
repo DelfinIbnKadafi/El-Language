@@ -1,0 +1,2 @@
+error-compare-mixed-entries.ell (2) : Cannot compare an int with a str
+exit=1

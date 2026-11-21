@@ -1,0 +1,2 @@
+error-return-array-element.ell (3) : An element of an array of dictionaries cannot be returned directly. Copy it into a dictionary variable first, like var dict item = u[0]; return item;
+exit=1

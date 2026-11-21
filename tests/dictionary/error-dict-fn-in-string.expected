@@ -1,0 +1,2 @@
+error-dict-fn-in-string.ell (3) : Function 'mk' does not return a string value
+exit=1

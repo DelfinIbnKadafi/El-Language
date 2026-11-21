@@ -1,0 +1,2 @@
+error-bool-plus-equals.ell (2) : Key "b" of dictionary 'd' holds a bool, so + and - cannot be used on it
+exit=1

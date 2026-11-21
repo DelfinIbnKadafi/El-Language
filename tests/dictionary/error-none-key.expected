@@ -1,0 +1,2 @@
+error-none-key.ell (3) : A dictionary key cannot be NONE
+exit=1

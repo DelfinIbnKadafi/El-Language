@@ -1,0 +1,2 @@
+var int x = 1;
+print has_key(x, "a");

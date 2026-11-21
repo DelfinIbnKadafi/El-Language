@@ -1,0 +1,21 @@
+var dict person;
+
+person["name"] = "Delfin";
+person["age"] = 30;
+person["score"] = 9.5;
+
+print person["name"];
+print person["age"];
+print person["score"];
+
+var str n = person["name"];
+var int a = person["age"];
+var float s = person["score"];
+print n;
+print a;
+print s;
+
+print person;
+print len(person);
+print has_key(person, "age");
+print has_key(person, "city");

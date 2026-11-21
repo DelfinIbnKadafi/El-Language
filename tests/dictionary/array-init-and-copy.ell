@@ -1,0 +1,18 @@
+var dict users[3] = {{"name": "A", "age": 1}, {"name": "B", "age": 2}};
+print users[0];
+print users[1];
+print users[2];
+users[2] = users[0];
+users[2]["name"] = "C";
+print users[0]["name"];
+print users[2];
+users[0] = {"name": "new"};
+print users[0];
+users[1] = {};
+print users[1];
+print len(users);
+var dict one = users[0];
+print one;
+var int i = 2;
+users[i] = users[i - 1];
+print users[2];

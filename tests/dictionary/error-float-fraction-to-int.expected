@@ -1,0 +1,2 @@
+error-float-fraction-to-int.ell (2) : Key "c" of dictionary 'd' holds the float 2.5, which is not a whole number
+exit=1

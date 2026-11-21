@@ -1,6 +1,6 @@
 # Dictionary Functions
 
-Functions that work on a whole [dictionary](content/dictionaries/dictionary.md). The first argument is always the dictionary variable itself, written without a key (or an array element, like `users[1]`).
+Functions that work on a whole [dictionary](content/dictionaries/dictionary.md). The first argument is the dictionary: a dictionary variable, an array element like `users[1]`, or an entry that holds a dictionary like `user["address"]`.
 
 ## Syntax
 
@@ -22,7 +22,21 @@ print len(p);
 // 2
 ```
 
-`len(dict["key"])` is the length of the text an entry holds, like `len()` of any `str`. For an array of dictionaries, `len(users)` is the size of the array and `len(users[0])` is the number of keys of one dictionary.
+`len(dict["key"])` is the length of the text the entry holds, like `len()` of any `str`, or the number of keys if the entry holds a dictionary. For an array of dictionaries, `len(users)` is the size of the array and `len(users[0])` is the number of keys of one dictionary.
+
+```el
+var dict user = {"name": "Delfin", "address": {"city": "Jakarta", "zip": 12345}};
+
+print len(user["name"]);
+print len(user["address"]);
+```
+
+Output:
+
+```
+6
+2
+```
 
 ## has_key
 
@@ -44,6 +58,8 @@ no age
 ```
 
 The result is a `bool`, so it can be kept in a variable: `var bool found = has_key(p, "age");`
+
+`has_key()` is also `true` for a key that holds `NONE`: the key exists, its value is `NONE`. To look inside a dictionary in a dictionary, give the inner one: `has_key(user["address"], "zip")`.
 
 ## remove_key
 
@@ -91,7 +107,7 @@ age = 30
 score = 9.5
 ```
 
-A position outside `0` to `len(dict) - 1` stops the program with an error.
+A position outside `0` to `len(dict) - 1` stops the program with an error. It works the same for an inner dictionary: `key_at(user["address"], 0)`.
 
 `str(p[key])` turns an entry of any type into text, so the loop can print them all with `%s`.
 
@@ -100,8 +116,8 @@ A position outside `0` to `len(dict) - 1` stops the program with an error.
 | Message | Cause |
 |---|---|
 | `has_key() argument 1 must be a dictionary` | The first argument is not a `dict` variable. |
-| `has_key() needs the whole dictionary, not one of its entries` | The first argument has a key, like `p["a"]`. |
-| `Key position 7 is out of range (the dictionary has 3 keys)` | `key_at()` was given a position that does not exist. |
+| `Key "k" of dictionary 'd' holds an int, not a dictionary` | The first argument is an entry that does not hold a dictionary, like `has_key(p["age"], "x")`. |
+| `Key position 7 is out of range (the dictionary has 3 key(s))` | `key_at()` was given a position that does not exist. |
 
 ## Related
 

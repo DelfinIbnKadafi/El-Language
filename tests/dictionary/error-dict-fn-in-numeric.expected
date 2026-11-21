@@ -1,0 +1,2 @@
+error-dict-fn-in-numeric.ell (3) : Function 'mk' does not return a numeric/bool value
+exit=1
