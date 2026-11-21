@@ -11,7 +11,7 @@ var dict name = other;
 
 // an array of dictionaries
 var dict name[size];
-var dict name[2] = {{"key": 1}, {"key": 2}};
+var dict name[2] = { {"key": 1}, {"key": 2} };
 ```
 
 Reading and writing an entry:
@@ -343,7 +343,7 @@ Bob is 25
 Values can be given when it is declared, one `{...}` for each element, starting from the first. Elements that are left out start empty.
 
 ```el
-var dict team[3] = {{"name": "A", "age": 1}, {"name": "B", "age": 2}};
+var dict team[3] = { {"name": "A", "age": 1}, {"name": "B", "age": 2} };
 
 print team[1];
 print team[2];
